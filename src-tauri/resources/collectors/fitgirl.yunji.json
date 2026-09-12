@@ -1,0 +1,39 @@
+{
+  "id": "fitgirl",
+  "name": "FitGirl Repacks 详情页",
+  "version": "1.0.0",
+  "description": "采集 fitgirl-repacks.site 游戏详情页：标题、封面、截图图集、磁力链接、游戏简介",
+  "builtin": true,
+  "urlPattern": ["*://fitgirl-repacks.site/*"],
+  "request": {
+    "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  },
+  "fields": {
+    "title": {
+      "selector": ".entry-title",
+      "text": true
+    },
+    "description": {
+      "selectByText": {
+        "scope": ".su-spoiler",
+        "text": "Game Description",
+        "target": ".su-spoiler-content"
+      },
+      "html": true
+    },
+    "thumbnail": {
+      "selector": ".entry-content img.alignleft",
+      "attr": "src"
+    },
+    "images": {
+      "selector": ".entry-content img[src*='riotpixels.net']",
+      "attr": "src",
+      "multiple": true
+    },
+    "magnets": {
+      "selector": ".entry-content a[href^='magnet:']",
+      "attr": "href",
+      "multiple": true
+    }
+  }
+}
