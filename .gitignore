@@ -20,6 +20,7 @@ data/
 *.db-wal
 *.db-shm
 data.zip
+git.bat
 
 # Environment & secrets
 .env
