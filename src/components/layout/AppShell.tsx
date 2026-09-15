@@ -21,7 +21,7 @@ export function AppShell() {
   return (
     <div className={styles.shell}>
       <Navbar />
-      <main className={styles.main}>
+      <main className={styles.main} data-scroll-container>
         <Outlet />
       </main>
       <ViewSwitcher />

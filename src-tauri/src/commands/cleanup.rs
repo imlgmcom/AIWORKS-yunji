@@ -16,7 +16,7 @@ pub struct OrphanFile {
     /// 相对存储根的路径（正斜杠），与数据库中存储格式一致
     pub path: String,
     pub name: String,
-    /// thumbnail | gallery | content | file | torrent | magnet | avatar | other
+    /// thumbnail | gallery | content | file | torrent | magnet | avatar | logo | other
     pub category: &'static str,
     pub size: u64,
     /// 最后修改时间（Unix 秒）
@@ -69,6 +69,11 @@ async fn collect_referenced(state: &State<'_, AppState>) -> Result<HashSet<Strin
     collect_paths!("SELECT thumbnail_path FROM collections WHERE thumbnail_path<>''");
     // 用户头像
     collect_paths!("SELECT avatar_path FROM users WHERE avatar_path<>''");
+    // 站点 LOGO（横幅图 + 图标，路径存于 settings）
+    collect_paths!(
+        "SELECT value FROM settings \
+         WHERE key IN ('logo_image_path','logo_icon_path') AND value<>''"
+    );
 
     // 文章正文中以 Markdown/HTML 引用的相对路径
     let contents: Vec<String> =
@@ -115,6 +120,7 @@ fn category_of(rel: &str) -> &'static str {
         "torrents" => "torrent",
         "magnets" => "magnet",
         "avatars" => "avatar",
+        "logo" => "logo",
         _ => "other",
     }
 }

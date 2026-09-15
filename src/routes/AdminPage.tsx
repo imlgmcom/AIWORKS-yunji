@@ -20,7 +20,10 @@ import {
   MessageBar,
   MessageBarBody,
   MessageBarTitle,
+  Radio,
+  RadioGroup,
   Spinner,
+  Switch,
   Tab,
   TabList,
   Textarea,
@@ -38,12 +41,17 @@ import {
   FolderOpenRegular,
   ImageRegular,
   DocumentRegular,
+  DesktopRegular,
+  SearchRegular,
 } from '@fluentui/react-icons';
-import { settingsApi, userApi, assetUrl, cleanupApi, torrentApi } from '../lib/tauri';
+import { settingsApi, userApi, authApi, assetUrl, cleanupApi, torrentApi } from '../lib/tauri';
 import type { OrphanFile } from '../lib/tauri';
+import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { useAuthStore } from '../stores/authStore';
 import { usePerms } from '../hooks/usePerms';
 import { useSelection, BatchBar } from '../components/batch';
+import { AvatarCropDialog } from '../components/AvatarCropDialog';
+import { Pagination } from '../components/Pagination';
 import { formatBytes } from '../lib/format';
 import type { AdminUser } from '../types/models';
 
@@ -217,6 +225,8 @@ function GeneralTab() {
   const styles = useStyles();
   const queryClient = useQueryClient();
   const [form, setForm] = useState<Record<string, string>>({});
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [logoError, setLogoError] = useState('');
 
   const { data: settings } = useQuery({
     queryKey: ['settings'],
@@ -237,6 +247,48 @@ function GeneralTab() {
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }));
 
+  const refreshSettings = () => {
+    queryClient.invalidateQueries({ queryKey: ['settings'] });
+    queryClient.invalidateQueries({ queryKey: ['public-settings'] });
+  };
+
+  const pickLogo = async (kind: 'image' | 'icon') => {
+    setLogoError('');
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif', 'svg', 'ico'] }],
+    });
+    if (typeof selected !== 'string') return;
+    setLogoBusy(true);
+    try {
+      const savedPath = await settingsApi.uploadLogo(selected, kind);
+      set(kind === 'image' ? 'logo_image_path' : 'logo_icon_path', savedPath);
+      refreshSettings();
+    } catch (e: any) {
+      setLogoError(e.message || 'LOGO 上传失败');
+    } finally {
+      setLogoBusy(false);
+    }
+  };
+
+  const removeLogo = async (kind: 'image' | 'icon') => {
+    setLogoError('');
+    setLogoBusy(true);
+    try {
+      await settingsApi.clearLogo(kind);
+      set(kind === 'image' ? 'logo_image_path' : 'logo_icon_path', '');
+      refreshSettings();
+    } catch (e: any) {
+      setLogoError(e.message || 'LOGO 清除失败');
+    } finally {
+      setLogoBusy(false);
+    }
+  };
+
+  const logoMode = form.logo_mode ?? 'text';
+  const logoPath = form.logo_image_path ?? '';
+  const iconPath = form.logo_icon_path ?? '';
+
   return (
     <div className={styles.container}>
       <Card className={styles.card}>
@@ -251,13 +303,136 @@ function GeneralTab() {
             onChange={(_, d) => set('site_name', d.value)}
           />
         </div>
+        <div className={styles.field}>
+          <Label id="logo_mode_label">LOGO 样式</Label>
+          <RadioGroup
+            aria-labelledby="logo_mode_label"
+            value={logoMode}
+            onChange={(_, d) => set('logo_mode', d.value)}
+          >
+            <Radio value="text" label="文字 LOGO（仅显示站点名称）" />
+            <Radio value="icon_text" label="图标 + 文字" />
+            <Radio value="image" label="图片 LOGO" />
+          </RadioGroup>
+        </div>
+        {(logoMode === 'image' || logoMode === 'icon_text') && (
+          <div className={styles.field}>
+            <Label>{logoMode === 'image' ? 'LOGO 图片' : '图标图片'}</Label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div
+                style={
+                  logoMode === 'image'
+                    ? {
+                        width: '120px',
+                        height: '48px',
+                        border: `1px solid ${tokens.colorNeutralStroke2}`,
+                        borderRadius: '8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: tokens.colorNeutralBackground2,
+                        overflow: 'hidden',
+                      }
+                    : {
+                        width: '48px',
+                        height: '48px',
+                        border: `1px solid ${tokens.colorNeutralStroke2}`,
+                        borderRadius: '8px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        backgroundColor: tokens.colorNeutralBackground2,
+                        overflow: 'hidden',
+                      }
+                }
+              >
+                {logoMode === 'image' ? (
+                  logoPath ? (
+                    <img
+                      src={assetUrl(logoPath)}
+                      alt="LOGO"
+                      style={{ maxWidth: '90%', maxHeight: '90%', objectFit: 'contain' }}
+                    />
+                  ) : (
+                    <span style={{ fontSize: '12px', color: tokens.colorNeutralForeground3 }}>
+                      未设置
+                    </span>
+                  )
+                ) : iconPath ? (
+                  <img
+                    src={assetUrl(iconPath)}
+                    alt="图标"
+                    style={{ maxWidth: '90%', maxHeight: '90%', objectFit: 'contain' }}
+                  />
+                ) : (
+                  <span style={{ fontSize: '11px', color: tokens.colorNeutralForeground3 }}>
+                    默认图标
+                  </span>
+                )}
+              </div>
+              <Button
+                appearance="outline"
+                icon={<ImageRegular />}
+                onClick={() => pickLogo(logoMode === 'image' ? 'image' : 'icon')}
+                disabled={logoBusy}
+              >
+                {logoMode === 'image'
+                  ? logoPath
+                    ? '更换图片'
+                    : '上传图片'
+                  : iconPath
+                    ? '更换图标'
+                    : '上传图标'}
+              </Button>
+              {((logoMode === 'image' && logoPath) || (logoMode === 'icon_text' && iconPath)) && (
+                <Button
+                  appearance="subtle"
+                  icon={<DeleteRegular />}
+                  onClick={() => removeLogo(logoMode === 'image' ? 'image' : 'icon')}
+                  disabled={logoBusy}
+                >
+                  移除
+                </Button>
+              )}
+              {logoBusy && <Spinner size="tiny" />}
+            </div>
+            <div style={{ fontSize: '12px', color: tokens.colorNeutralForeground3, marginTop: '4px' }}>
+              {logoMode === 'image'
+                ? '图片将铺满左上角 LOGO 区域（建议宽幅图片）'
+                : '建议使用正方形图片，显示为站点名称前的图标；不上传则使用默认图标'}
+            </div>
+            {logoError && (
+              <div style={{ color: tokens.colorPaletteRedForeground1, fontSize: '12px', marginTop: '4px' }}>
+                {logoError}
+              </div>
+            )}
+          </div>
+        )}
         <Button
           appearance="primary"
-          onClick={() => updateMut.mutate({ site_name: form.site_name ?? '' })}
+          onClick={() =>
+            updateMut.mutate({
+              site_name: form.site_name ?? '',
+              logo_mode: logoMode,
+            })
+          }
           disabled={updateMut.isPending}
         >
           保存
         </Button>
+      </Card>
+
+      <Card className={styles.card}>
+        <div className={styles.title}>
+          <DesktopRegular /> 窗口行为
+        </div>
+        <div className={styles.field}>
+          <Switch
+            label="关闭按钮最小化到托盘（点击窗口 × 时隐藏到系统托盘，通过托盘菜单退出程序）"
+            checked={form.close_to_tray === '1'}
+            onChange={(_, d) => updateMut.mutate({ close_to_tray: d.checked ? '1' : '0' })}
+          />
+        </div>
       </Card>
 
       <Card className={styles.card}>
@@ -313,16 +488,33 @@ function UsersTab() {
   const queryClient = useQueryClient();
   const selection = useSelection();
   const currentUserId = useAuthStore((s) => s.user?.id);
+  const refreshMe = useAuthStore((s) => s.setUser);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [editTarget, setEditTarget] = useState<AdminUser | null>(null);
+  const [cropTarget, setCropTarget] = useState<{ userId: number; file: string } | null>(null);
   const [editForm, setEditForm] = useState<EditForm>({
     username: '', nickname: '', email: '', bio: '', permission_level: 0, new_password: '',
   });
+  const [page, setPage] = useState(1);
+  const [keyword, setKeyword] = useState('');
+  const PAGE_SIZE = 36;
 
-  const { data: users = [], isLoading } = useQuery({
-    queryKey: ['users'],
-    queryFn: userApi.list,
+  const { data, isLoading } = useQuery({
+    queryKey: ['users', 'paged', page, keyword],
+    queryFn: () => userApi.listPage(page, PAGE_SIZE, keyword || undefined),
   });
+  const users = data?.items ?? [];
+  const totalUsers = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalUsers / PAGE_SIZE));
+
+  // 删除后当前页空了自动回退；翻页/搜索清空选择
+  useEffect(() => {
+    if (!isLoading && page > 1 && users.length === 0) setPage(page - 1);
+  }, [isLoading, users.length, page]);
+  useEffect(() => {
+    selection.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, keyword]);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ['users'] });
 
@@ -369,6 +561,7 @@ function UsersTab() {
 
   const saveEdit = () => {
     if (!editTarget) return;
+    const editingSelf = editTarget.id === currentUserId;
     updateMut.mutate({
       user_id: editTarget.id,
       username: editForm.username.trim(),
@@ -377,13 +570,42 @@ function UsersTab() {
       bio: editForm.bio,
       permission_level: editForm.permission_level,
       new_password: editForm.new_password.trim() || null,
+    }, {
+      onSuccess: async () => {
+        // 编辑的是自己：刷新登录态，导航栏昵称等立即生效
+        if (editingSelf) {
+          const fresh = await authApi.me();
+          if (fresh) refreshMe(fresh);
+        }
+      },
     });
+  };
+
+  const handlePickAvatar = async (userId: number) => {
+    const selected = await openDialog({
+      multiple: false,
+      filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }],
+    });
+    const filePath = typeof selected === 'string' ? selected : null;
+    if (filePath) setCropTarget({ userId, file: filePath });
   };
 
   return (
     <Card className={styles.card}>
-      <div className={styles.title}>
-        <PersonRegular /> 用户管理
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', flexWrap: 'wrap' }}>
+        <div className={styles.title}>
+          <PersonRegular /> 用户管理
+        </div>
+        <Input
+          style={{ width: '220px' }}
+          placeholder="搜索用户名 / 昵称 / 邮箱"
+          value={keyword}
+          onChange={(_, d) => {
+            setKeyword(d.value);
+            setPage(1);
+          }}
+          contentBefore={<SearchRegular />}
+        />
       </div>
 
       {msg && (
@@ -397,6 +619,10 @@ function UsersTab() {
 
       {isLoading ? (
         <div style={{ color: tokens.colorNeutralForeground3, fontSize: '13px' }}>加载中...</div>
+      ) : users.length === 0 ? (
+        <div style={{ color: tokens.colorNeutralForeground3, fontSize: '13px', padding: '12px 0' }}>
+          {keyword ? '没有匹配的用户' : '暂无用户'}
+        </div>
       ) : (
         <div>
           {users.map((u) => (
@@ -435,6 +661,7 @@ function UsersTab() {
               </Button>
             </div>
           ))}
+          <Pagination page={page} totalPages={totalPages} total={totalUsers} onChange={setPage} />
         </div>
       )}
 
@@ -467,6 +694,24 @@ function UsersTab() {
               编辑用户（{editTarget?.nickname || editTarget?.username}）
             </DialogTitle>
             <DialogContent>
+              <div className={styles.field}>
+                <Label>头像</Label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                  <Avatar
+                    size={56}
+                    name={editForm.nickname || editForm.username}
+                    image={editTarget?.avatar_path ? { src: assetUrl(editTarget.avatar_path) } : undefined}
+                  />
+                  <Button
+                    appearance="outline"
+                    size="small"
+                    icon={<ImageRegular />}
+                    onClick={() => editTarget && handlePickAvatar(editTarget.id)}
+                  >
+                    更换头像
+                  </Button>
+                </div>
+              </div>
               <div className={styles.field}>
                 <Label htmlFor="eu_username">用户名</Label>
                 <Input
@@ -548,15 +793,36 @@ function UsersTab() {
           </DialogBody>
         </DialogSurface>
       </Dialog>
+
+      {/* 裁剪并设置目标用户头像 */}
+      {cropTarget && (
+        <AvatarCropDialog
+          filePath={cropTarget.file}
+          targetUserId={cropTarget.userId}
+          onClose={() => setCropTarget(null)}
+          onUploaded={async (path) => {
+            invalidate();
+            setEditTarget((t) => (t && t.id === cropTarget.userId ? { ...t, avatar_path: path } : t));
+            setMsg({ ok: true, text: '头像已更新' });
+            // 改的是自己：刷新登录态，导航栏头像立即生效
+            if (cropTarget.userId === currentUserId) {
+              const fresh = await authApi.me();
+              if (fresh) refreshMe(fresh);
+            }
+          }}
+        />
+      )}
     </Card>
   );
 }
 
 // --- 权限管理 ---
 
-const PERM_FIELDS: { key: string; label: string }[] = [
-  { key: 'perm_article', label: '文章管理' },
-  { key: 'perm_collection', label: '合集管理' },
+const PERM_FIELDS: { key: string; label: string; hint?: string }[] = [
+  { key: 'perm_article_own', label: '文章（自己）', hint: '新建、编辑、删除自己的文章' },
+  { key: 'perm_article', label: '文章（管理他人）', hint: '编辑、删除、批量操作他人的文章' },
+  { key: 'perm_collection_own', label: '合集（自己）', hint: '新建、编辑、删除自己的合集' },
+  { key: 'perm_collection', label: '合集（管理他人）', hint: '管理他人创建的合集' },
   { key: 'perm_tag', label: '标签管理' },
   { key: 'perm_trash', label: '回收站管理' },
   { key: 'perm_user', label: '用户管理' },
@@ -610,6 +876,11 @@ function PermissionsTab() {
       {PERM_FIELDS.map((f) => (
         <div key={f.key} className={styles.field}>
           <Label>{f.label}</Label>
+          {f.hint && (
+            <span style={{ fontSize: '12px', color: tokens.colorNeutralForeground3, display: 'block', marginBottom: '4px' }}>
+              {f.hint}
+            </span>
+          )}
           <Dropdown
             value={levelText(form[f.key] ?? 5)}
             selectedOptions={[String(form[f.key] ?? 5)]}
@@ -650,6 +921,7 @@ const CATEGORY_LABELS: Record<OrphanFile['category'], string> = {
   torrent: '上传种子',
   magnet: '磁力种子',
   avatar: '头像',
+  logo: '站点 LOGO',
   other: '其他',
 };
 

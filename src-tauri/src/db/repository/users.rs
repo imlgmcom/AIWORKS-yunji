@@ -29,6 +29,17 @@ pub struct UserItem {
     pub created_at: String,
 }
 
+/// 作者列表项：仅有已发布（未删除且对当前访问者可见）资源的用户
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AuthorItem {
+    pub id: i64,
+    pub username: String,
+    pub nickname: String,
+    pub bio: String,
+    pub avatar_path: String,
+    pub resource_count: i64,
+}
+
 type UserRow = (i64, String, String, String, String, String, String, i64, i64);
 
 const USER_COLS: &str =
@@ -176,6 +187,30 @@ pub async fn update_avatar(pool: &SqlitePool, uid: i64, avatar_path: &str) -> Re
     Ok(())
 }
 
+// 作者列表：至少有一篇未删除、且 read_level <= viewer_level 资源的用户，按文章数降序
+pub async fn list_authors(pool: &SqlitePool, viewer_level: i64) -> Result<Vec<AuthorItem>, AppError> {
+    let level = viewer_level.clamp(0, 5);
+    let rows = sqlx::query_as::<_, (i64, String, String, String, String, i64)>(
+        "SELECT u.id, u.username, u.nickname, u.bio, u.avatar_path, \
+         (SELECT COUNT(*) FROM resources r \
+          WHERE r.user_id = u.id AND r.deleted_at IS NULL AND r.read_level <= ?) AS cnt \
+         FROM users u \
+         WHERE EXISTS (SELECT 1 FROM resources r \
+                       WHERE r.user_id = u.id AND r.deleted_at IS NULL AND r.read_level <= ?) \
+         ORDER BY cnt DESC, u.id ASC",
+    )
+    .bind(level)
+    .bind(level)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, username, nickname, bio, avatar_path, resource_count)| AuthorItem {
+            id, username, nickname, bio, avatar_path, resource_count,
+        })
+        .collect())
+}
+
 // 用户列表（管理页）
 pub async fn list_all(pool: &SqlitePool) -> Result<Vec<UserItem>, AppError> {
     let rows = sqlx::query_as::<_, (i64, String, String, String, String, String, i64, i64, String)>(
@@ -195,6 +230,153 @@ pub async fn list_all(pool: &SqlitePool) -> Result<Vec<UserItem>, AppError> {
             },
         )
         .collect())
+}
+
+fn map_user_row(
+    row: (i64, String, String, String, String, String, i64, i64, String),
+) -> UserItem {
+    let (id, username, nickname, email, bio, avatar_path, is_admin, permission_level, created_at) = row;
+    UserItem {
+        id, username, nickname, email, bio, avatar_path,
+        is_admin: is_admin != 0,
+        permission_level,
+        created_at,
+    }
+}
+
+/// 分页查询用户（管理页，可选按用户名/昵称/邮箱模糊搜索）
+pub async fn list_all_paged(
+    pool: &SqlitePool,
+    limit: i64,
+    offset: i64,
+    search: Option<&str>,
+) -> Result<crate::db::repository::Paged<UserItem>, AppError> {
+    let like = search
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!("%{}%", s.trim()));
+
+    let total: i64 = if like.is_some() {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM users \
+             WHERE username LIKE ?1 OR nickname LIKE ?1 OR email LIKE ?1",
+        )
+        .bind(like.as_deref().unwrap_or("%"))
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query_scalar("SELECT COUNT(*) FROM users")
+            .fetch_one(pool)
+            .await?
+    };
+
+    let rows = if like.is_some() {
+        sqlx::query_as::<_, (i64, String, String, String, String, String, i64, i64, String)>(
+            "SELECT id, username, nickname, email, bio, avatar_path, is_admin, permission_level, created_at \
+             FROM users WHERE username LIKE ?1 OR nickname LIKE ?1 OR email LIKE ?1 \
+             ORDER BY id ASC LIMIT ?2 OFFSET ?3",
+        )
+        .bind(like.as_deref().unwrap_or("%"))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, (i64, String, String, String, String, String, i64, i64, String)>(
+            "SELECT id, username, nickname, email, bio, avatar_path, is_admin, permission_level, created_at \
+             FROM users ORDER BY id ASC LIMIT ?1 OFFSET ?2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(crate::db::repository::Paged {
+        items: rows.into_iter().map(map_user_row).collect(),
+        total,
+    })
+}
+
+/// 分页查询作者（公开视图，可选按用户名/昵称模糊搜索）
+pub async fn list_authors_paged(
+    pool: &SqlitePool,
+    viewer_level: i64,
+    limit: i64,
+    offset: i64,
+    search: Option<&str>,
+) -> Result<crate::db::repository::Paged<AuthorItem>, AppError> {
+    let level = viewer_level.clamp(0, 5);
+    let like = search
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!("%{}%", s.trim()));
+
+    let total: i64 = if like.is_some() {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM users u \
+             WHERE EXISTS (SELECT 1 FROM resources r \
+                           WHERE r.user_id = u.id AND r.deleted_at IS NULL AND r.read_level <= ?1) \
+             AND (u.username LIKE ?2 OR u.nickname LIKE ?2)",
+        )
+        .bind(level)
+        .bind(like.as_deref().unwrap_or("%"))
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM users u \
+             WHERE EXISTS (SELECT 1 FROM resources r \
+                           WHERE r.user_id = u.id AND r.deleted_at IS NULL AND r.read_level <= ?1)",
+        )
+        .bind(level)
+        .fetch_one(pool)
+        .await?
+    };
+
+    let rows = if like.is_some() {
+        sqlx::query_as::<_, (i64, String, String, String, String, i64)>(
+            "SELECT u.id, u.username, u.nickname, u.bio, u.avatar_path, \
+             (SELECT COUNT(*) FROM resources r \
+              WHERE r.user_id = u.id AND r.deleted_at IS NULL AND r.read_level <= ?1) AS cnt \
+             FROM users u \
+             WHERE EXISTS (SELECT 1 FROM resources r \
+                           WHERE r.user_id = u.id AND r.deleted_at IS NULL AND r.read_level <= ?2) \
+             AND (u.username LIKE ?3 OR u.nickname LIKE ?3) \
+             ORDER BY cnt DESC, u.id ASC LIMIT ?4 OFFSET ?5",
+        )
+        .bind(level)
+        .bind(level)
+        .bind(like.as_deref().unwrap_or("%"))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, (i64, String, String, String, String, i64)>(
+            "SELECT u.id, u.username, u.nickname, u.bio, u.avatar_path, \
+             (SELECT COUNT(*) FROM resources r \
+              WHERE r.user_id = u.id AND r.deleted_at IS NULL AND r.read_level <= ?1) AS cnt \
+             FROM users u \
+             WHERE EXISTS (SELECT 1 FROM resources r \
+                           WHERE r.user_id = u.id AND r.deleted_at IS NULL AND r.read_level <= ?2) \
+             ORDER BY cnt DESC, u.id ASC LIMIT ?3 OFFSET ?4",
+        )
+        .bind(level)
+        .bind(level)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(crate::db::repository::Paged {
+        items: rows
+            .into_iter()
+            .map(|(id, username, nickname, bio, avatar_path, resource_count)| AuthorItem {
+                id, username, nickname, bio, avatar_path, resource_count,
+            })
+            .collect(),
+        total,
+    })
 }
 
 // 批量删除用户，返回被删除用户的头像路径（用于清理文件）

@@ -11,21 +11,25 @@ pub struct Collection {
     pub visibility: String,
     pub access_password: String,
     pub thumbnail_path: String,
+    pub content: String,
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
     #[serde(default)]
     pub resource_count: i64,
+    #[serde(default)]
+    pub user_id: Option<i64>,
 }
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<Collection>, AppError> {
     let rows = sqlx::query_as::<
         _,
-        (i64, String, String, String, String, String, String, String, Option<String>, i64),
+        (i64, String, String, String, String, String, String, String, String, Option<String>, i64, Option<i64>),
     >(
         "SELECT c.id, c.title, c.description, c.visibility, c.access_password, c.thumbnail_path, \
-         c.created_at, c.updated_at, c.deleted_at, \
-         (SELECT COUNT(*) FROM resource_collections rc WHERE rc.collection_id = c.id) as resource_count \
+         c.content, c.created_at, c.updated_at, c.deleted_at, \
+         (SELECT COUNT(*) FROM resource_collections rc WHERE rc.collection_id = c.id) as resource_count, \
+         c.user_id \
          FROM collections c WHERE c.deleted_at IS NULL ORDER BY c.created_at DESC",
     )
     .fetch_all(pool)
@@ -34,24 +38,86 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Collection>, AppError> {
     Ok(rows
         .into_iter()
         .map(
-            |(id, title, description, visibility, access_password, thumbnail_path, created_at, updated_at, deleted_at, resource_count)| {
+            |(id, title, description, visibility, access_password, thumbnail_path, content, created_at, updated_at, deleted_at, resource_count, user_id)| {
                 Collection {
                     id, title, description, visibility, access_password, thumbnail_path,
-                    created_at, updated_at, deleted_at, resource_count,
+                    content, created_at, updated_at, deleted_at, resource_count, user_id,
                 }
             },
         )
         .collect())
 }
 
+/// 分页查询合集（可选按标题模糊搜索）
+pub async fn list_paged(
+    pool: &SqlitePool,
+    limit: i64,
+    offset: i64,
+    search: Option<&str>,
+) -> Result<crate::db::repository::Paged<Collection>, AppError> {
+    let like = search
+        .filter(|s| !s.trim().is_empty())
+        .map(|s| format!("%{}%", s.trim()));
+
+    let total: i64 = if like.is_some() {
+        sqlx::query_scalar(
+            "SELECT COUNT(*) FROM collections WHERE deleted_at IS NULL AND title LIKE ?1",
+        )
+        .bind(like.as_deref().unwrap_or("%"))
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query_scalar("SELECT COUNT(*) FROM collections WHERE deleted_at IS NULL")
+            .fetch_one(pool)
+            .await?
+    };
+
+    let base = "SELECT c.id, c.title, c.description, c.visibility, c.access_password, c.thumbnail_path, \
+         c.content, c.created_at, c.updated_at, c.deleted_at, \
+         (SELECT COUNT(*) FROM resource_collections rc WHERE rc.collection_id = c.id) as resource_count, \
+         c.user_id \
+         FROM collections c WHERE c.deleted_at IS NULL";
+    let sql = if like.is_some() {
+        format!("{base} AND c.title LIKE ?1 ORDER BY c.created_at DESC LIMIT ?2 OFFSET ?3")
+    } else {
+        format!("{base} ORDER BY c.created_at DESC LIMIT ?1 OFFSET ?2")
+    };
+
+    let mut query = sqlx::query_as::<
+        _,
+        (i64, String, String, String, String, String, String, String, String, Option<String>, i64, Option<i64>),
+    >(&sql);
+    if let Some(l) = &like {
+        query = query.bind(l);
+    }
+    query = query.bind(limit).bind(offset);
+    let rows = query.fetch_all(pool).await?;
+
+    Ok(crate::db::repository::Paged {
+        items: rows
+            .into_iter()
+            .map(
+                |(id, title, description, visibility, access_password, thumbnail_path, content, created_at, updated_at, deleted_at, resource_count, user_id)| {
+                    Collection {
+                        id, title, description, visibility, access_password, thumbnail_path,
+                        content, created_at, updated_at, deleted_at, resource_count, user_id,
+                    }
+                },
+            )
+            .collect(),
+        total,
+    })
+}
+
 pub async fn get(pool: &SqlitePool, cid: i64) -> Result<Collection, AppError> {
     let row = sqlx::query_as::<
         _,
-        (i64, String, String, String, String, String, String, String, Option<String>, i64),
+        (i64, String, String, String, String, String, String, String, String, Option<String>, i64, Option<i64>),
     >(
         "SELECT c.id, c.title, c.description, c.visibility, c.access_password, c.thumbnail_path, \
-         c.created_at, c.updated_at, c.deleted_at, \
-         (SELECT COUNT(*) FROM resource_collections rc WHERE rc.collection_id = c.id) as resource_count \
+         c.content, c.created_at, c.updated_at, c.deleted_at, \
+         (SELECT COUNT(*) FROM resource_collections rc WHERE rc.collection_id = c.id) as resource_count, \
+         c.user_id \
          FROM collections c WHERE c.id = ? AND c.deleted_at IS NULL",
     )
     .bind(cid)
@@ -59,11 +125,11 @@ pub async fn get(pool: &SqlitePool, cid: i64) -> Result<Collection, AppError> {
     .await?;
 
     let row = row.ok_or(AppError::NotFound)?;
-    let (id, title, description, visibility, access_password, thumbnail_path, created_at, updated_at, deleted_at, resource_count) = row;
+    let (id, title, description, visibility, access_password, thumbnail_path, content, created_at, updated_at, deleted_at, resource_count, user_id) = row;
 
     Ok(Collection {
         id, title, description, visibility, access_password, thumbnail_path,
-        created_at, updated_at, deleted_at, resource_count,
+        content, created_at, updated_at, deleted_at, resource_count, user_id,
     })
 }
 
@@ -74,19 +140,23 @@ pub struct CreateCollection {
     pub visibility: Option<String>,
     pub access_password: String,
     pub thumbnail_path: String,
+    #[serde(default)]
+    pub content: String,
 }
 
-pub async fn create(pool: &SqlitePool, payload: &CreateCollection) -> Result<i64, AppError> {
+pub async fn create(pool: &SqlitePool, payload: &CreateCollection, user_id: i64) -> Result<i64, AppError> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let result = sqlx::query(
-        "INSERT INTO collections (title, description, visibility, access_password, thumbnail_path, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO collections (title, description, visibility, access_password, thumbnail_path, content, user_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&payload.title)
     .bind(&payload.description)
     .bind(payload.visibility.as_deref().unwrap_or("private"))
     .bind(&payload.access_password)
     .bind(&payload.thumbnail_path)
+    .bind(&payload.content)
+    .bind(user_id)
     .bind(&now)
     .bind(&now)
     .execute(pool)
@@ -97,7 +167,7 @@ pub async fn create(pool: &SqlitePool, payload: &CreateCollection) -> Result<i64
 pub async fn update(pool: &SqlitePool, cid: i64, payload: &CreateCollection) -> Result<(), AppError> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     sqlx::query(
-        "UPDATE collections SET title=?, description=?, visibility=?, access_password=?, thumbnail_path=?, updated_at=? \
+        "UPDATE collections SET title=?, description=?, visibility=?, access_password=?, thumbnail_path=?, content=?, updated_at=? \
          WHERE id=? AND deleted_at IS NULL",
     )
     .bind(&payload.title)
@@ -105,6 +175,7 @@ pub async fn update(pool: &SqlitePool, cid: i64, payload: &CreateCollection) -> 
     .bind(payload.visibility.as_deref().unwrap_or("private"))
     .bind(&payload.access_password)
     .bind(&payload.thumbnail_path)
+    .bind(&payload.content)
     .bind(&now)
     .bind(cid)
     .execute(pool)

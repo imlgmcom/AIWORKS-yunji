@@ -14,6 +14,23 @@ pub async fn list_tags(state: State<'_, AppState>) -> CmdResult<Vec<Tag>> {
 }
 
 #[tauri::command]
+pub async fn list_tags_page(
+    state: State<'_, AppState>,
+    page: i64,
+    page_size: i64,
+    search: Option<String>,
+) -> CmdResult<repository::Paged<Tag>> {
+    let (page, page_size) = repository::clamp_page(page, page_size);
+    Ok(repository::tags::list_paged(
+        &state.db,
+        page_size,
+        (page - 1) * page_size,
+        search.as_deref(),
+    )
+    .await?)
+}
+
+#[tauri::command]
 pub async fn create_tag(state: State<'_, AppState>, name: String) -> CmdResult<i64> {
     let _user = require_feature(&state.db, &state.auth, FEATURE_TAG).await?;
     Ok(repository::tags::create(&state.db, &name).await?)

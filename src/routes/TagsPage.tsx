@@ -1,5 +1,5 @@
 // 标签管理页
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -20,13 +20,16 @@ import {
   DialogOpenChangeData,
   tokens,
 } from '@fluentui/react-components';
-import { AddRegular, RenameRegular, DeleteRegular, MergeRegular } from '@fluentui/react-icons';
+import { AddRegular, RenameRegular, DeleteRegular, MergeRegular, SearchRegular } from '@fluentui/react-icons';
 import { tagApi } from '../lib/tauri';
 import type { Tag } from '../types/models';
 import { useSelection, CardCheckbox, BatchBar, runBatchAction } from '../components/batch';
 import { CardContextMenu } from '../components/CardContextMenu';
+import { Pagination } from '../components/Pagination';
 import { useSharedStyles } from '../styles/shared';
 import { usePerms } from '../hooks/usePerms';
+
+const PAGE_SIZE = 100;
 
 export function TagsPage() {
   const s = useSharedStyles();
@@ -40,11 +43,26 @@ export function TagsPage() {
   const [renameOpen, setRenameOpen] = useState(false);
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeTarget, setMergeTarget] = useState<number | null>(null);
+  const [page, setPage] = useState(1);
+  const [keyword, setKeyword] = useState('');
 
-  const { data: tags, isLoading } = useQuery({
-    queryKey: ['tags'],
-    queryFn: tagApi.list,
+  const { data, isLoading } = useQuery({
+    queryKey: ['tags', 'paged', page, keyword],
+    queryFn: () => tagApi.listPage(page, PAGE_SIZE, keyword || undefined),
   });
+  const tags = data?.items;
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+
+  // 删除后当前页空了，自动回退一页
+  useEffect(() => {
+    if (!isLoading && page > 1 && tags && tags.length === 0) setPage(page - 1);
+  }, [isLoading, tags, page]);
+  // 翻页清空选择
+  useEffect(() => {
+    selection.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, keyword]);
 
   const createMut = useMutation({
     mutationFn: (name: string) => tagApi.create(name),
@@ -128,6 +146,16 @@ export function TagsPage() {
     <div className={s.pageContainer}>
       <div className={s.pageHeader}>
         <h2 style={{ margin: 0 }}>标签管理</h2>
+        <Input
+          style={{ width: '220px' }}
+          placeholder="搜索标签"
+          value={keyword}
+          onChange={(_, d) => {
+            setKeyword(d.value);
+            setPage(1);
+          }}
+          contentBefore={<SearchRegular />}
+        />
       </div>
 
       {canTag && (
@@ -157,9 +185,10 @@ export function TagsPage() {
         <Spinner label="加载中..." />
       ) : !tags || tags.length === 0 ? (
         <Card>
-          <CardHeader header={<span>暂无标签</span>} />
+          <CardHeader header={<span>{keyword ? '没有匹配的标签' : '暂无标签'}</span>} />
         </Card>
       ) : (
+        <>
         <div className={s.gridList}>
           {tags.map((tag) => (
             <CardContextMenu
@@ -202,6 +231,8 @@ export function TagsPage() {
             </CardContextMenu>
           ))}
         </div>
+        <Pagination page={page} totalPages={totalPages} total={total} onChange={setPage} />
+        </>
       )}
 
       {/* 浮动批量操作栏（选中标签后显示） */}

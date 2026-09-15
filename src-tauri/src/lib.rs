@@ -9,10 +9,21 @@ mod state;
 mod storage;
 
 use std::path::PathBuf;
-use tauri::Manager;
+use tauri::{Manager, WindowEvent};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
 use crate::state::AppState;
 use crate::storage::get_storage;
+
+/// 显示并聚焦主窗口
+fn show_main_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -79,7 +90,54 @@ pub fn run() {
             let app_state = AppState::new(pool, storage, data_dir);
             app.manage(app_state);
 
+            // 系统托盘（左键单击显示窗口，右键菜单：显示 / 退出）
+            let show_item = MenuItem::with_id(app, "tray_show", "显示主窗口", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "tray_quit", "退出", true, None::<&str>)?;
+            let tray_menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            TrayIconBuilder::new()
+                .icon(app.default_window_icon().ok_or("缺少应用图标")?.clone())
+                .tooltip("云记")
+                .menu(&tray_menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "tray_show" => show_main_window(app),
+                    "tray_quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        show_main_window(tray.app_handle());
+                    }
+                })
+                .build(app)?;
+
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            // 开启"关闭最小化到托盘"时，拦截关闭改为隐藏窗口
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let to_tray = {
+                    let app = window.app_handle();
+                    let state = app.state::<AppState>();
+                    tauri::async_runtime::block_on(async {
+                        db::repository::settings::get(&state.db, "close_to_tray")
+                            .await
+                            .ok()
+                            .flatten()
+                            .map(|v| v == "1")
+                            .unwrap_or(false)
+                    })
+                };
+                if to_tray {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             // auth
@@ -90,9 +148,14 @@ pub fn run() {
             commands::auth::auth_update_profile,
             commands::auth::auth_change_username,
             commands::auth::auth_upload_avatar,
+            commands::auth::auth_upload_avatar_bytes,
             commands::auth::auth_change_password,
             // users（管理）
             commands::users::list_users,
+            commands::users::list_users_page,
+            commands::users::list_authors,
+            commands::users::list_authors_page,
+            commands::users::admin_set_user_avatar,
             commands::users::delete_users,
             commands::users::reset_user_password,
             commands::users::update_user,
@@ -106,6 +169,7 @@ pub fn run() {
             commands::resources::restore_resource,
             commands::resources::permanent_delete_resource,
             commands::resources::list_trash_resources,
+            commands::resources::list_trash_resources_page,
             commands::resources::check_resource_access,
             commands::resources::upload_resource_file,
             // images
@@ -121,12 +185,14 @@ pub fn run() {
             commands::images::reorder_collection_images,
             // tags
             commands::tags::list_tags,
+            commands::tags::list_tags_page,
             commands::tags::create_tag,
             commands::tags::rename_tag,
             commands::tags::delete_tag,
             commands::tags::merge_tags,
             // collections
             commands::collections::list_collections,
+            commands::collections::list_collections_page,
             commands::collections::get_collection,
             commands::collections::create_collection,
             commands::collections::update_collection,
@@ -140,6 +206,8 @@ pub fn run() {
             commands::settings::get_settings,
             commands::settings::update_settings,
             commands::settings::get_upload_base_dir,
+            commands::settings::upload_logo,
+            commands::settings::clear_logo,
             // categories（树形分类）
             commands::categories::list_categories,
             commands::categories::list_categories_flat,

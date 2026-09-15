@@ -1,5 +1,6 @@
 // 视图切换器 + 主题切换（浮动在内容区右下角）
 import type { ReactElement } from 'react';
+import { useLocation } from 'react-router-dom';
 import { Button, Tooltip } from '@fluentui/react-components';
 import {
   AppsListRegular,
@@ -22,21 +23,25 @@ const VIEW_MODES: { mode: ViewMode; icon: ReactElement; label: string }[] = [
 export function ViewSwitcher() {
   const s = useSharedStyles();
   const { viewMode, setViewMode, theme, toggleTheme } = useUIStore();
+  const location = useLocation();
+  // 仅在支持多视图的文章列表页（全部列表、回收站）显示视图切换按钮
+  const showViewModes = location.pathname === '/' || location.pathname === '/trash';
 
   return (
     <div className={s.viewSwitcher}>
-      {VIEW_MODES.map(({ mode, icon, label }) => (
-        <Tooltip key={mode} content={label} relationship="label">
-          <Button
-            icon={icon}
-            size="small"
-            appearance="subtle"
-            className={`${s.viewSwitcherBtn} ${viewMode === mode ? s.viewSwitcherActive : ''}`}
-            onClick={() => setViewMode(mode)}
-          />
-        </Tooltip>
-      ))}
-      <span className={s.viewSwitcherDivider} />
+      {showViewModes &&
+        VIEW_MODES.map(({ mode, icon, label }) => (
+          <Tooltip key={mode} content={label} relationship="label">
+            <Button
+              icon={icon}
+              size="small"
+              appearance="subtle"
+              className={`${s.viewSwitcherBtn} ${viewMode === mode ? s.viewSwitcherActive : ''}`}
+              onClick={() => setViewMode(mode)}
+            />
+          </Tooltip>
+        ))}
+      {showViewModes && <span className={s.viewSwitcherDivider} />}
       <Tooltip content={theme === 'light' ? '切换暗色' : '切换亮色'} relationship="label">
         <Button
           icon={theme === 'light' ? <WeatherSunnyRegular /> : <WeatherMoonRegular />}

@@ -13,6 +13,102 @@ pub async fn list_users(state: State<'_, AppState>) -> CmdResult<Vec<repository:
     Ok(repository::users::list_all(&state.db).await?)
 }
 
+#[tauri::command]
+pub async fn list_users_page(
+    state: State<'_, AppState>,
+    page: i64,
+    page_size: i64,
+    search: Option<String>,
+) -> CmdResult<repository::Paged<repository::users::UserItem>> {
+    require_feature(&state.db, &state.auth, FEATURE_USER).await?;
+    let (page, page_size) = repository::clamp_page(page, page_size);
+    Ok(repository::users::list_all_paged(
+        &state.db,
+        page_size,
+        (page - 1) * page_size,
+        search.as_deref(),
+    )
+    .await?)
+}
+
+/// 作者列表（公开，只返回有对当前访问者可见资源的用户）
+#[tauri::command]
+pub async fn list_authors(
+    state: State<'_, AppState>,
+) -> CmdResult<Vec<repository::users::AuthorItem>> {
+    let level = crate::auth::viewer_level(&state.auth).await;
+    Ok(repository::users::list_authors(&state.db, level).await?)
+}
+
+/// 作者列表（分页，公开）
+#[tauri::command]
+pub async fn list_authors_page(
+    state: State<'_, AppState>,
+    page: i64,
+    page_size: i64,
+    search: Option<String>,
+) -> CmdResult<repository::Paged<repository::users::AuthorItem>> {
+    let level = crate::auth::viewer_level(&state.auth).await;
+    let (page, page_size) = repository::clamp_page(page, page_size);
+    Ok(repository::users::list_authors_paged(
+        &state.db,
+        level,
+        page_size,
+        (page - 1) * page_size,
+        search.as_deref(),
+    )
+    .await?)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AdminAvatarPayload {
+    pub user_id: i64,
+    pub ext: String,
+    /// PNG/JPEG/WebP 图片字节
+    pub data: Vec<u8>,
+}
+
+/// 管理员为任意账号设置头像（前端裁剪后的字节）
+#[tauri::command]
+pub async fn admin_set_user_avatar(
+    state: State<'_, AppState>,
+    payload: AdminAvatarPayload,
+) -> CmdResult<String> {
+    let operator = require_feature(&state.db, &state.auth, FEATURE_USER).await?;
+    let target = repository::users::find_by_id(&state.db, payload.user_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    // 管理员账户的头像仅管理员可改（防止用户管理者越权）
+    if target.is_admin && !operator.is_admin {
+        return Err(AppError::Forbidden);
+    }
+    let ext = payload.ext.trim_start_matches('.').to_lowercase();
+    if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif") {
+        return Err(AppError::BadRequest("仅支持 jpg/png/webp/gif 图片".into()));
+    }
+    if payload.data.is_empty() || payload.data.len() > 10 * 1024 * 1024 {
+        return Err(AppError::BadRequest("图片为空或超过 10MB".into()));
+    }
+
+    let storage = state.storage.get().await;
+    let filename = format!("avatar_{}.{}", target.id, ext);
+    let saved = storage
+        .save(bytes::Bytes::from(payload.data), &filename, "avatars")
+        .await
+        .map_err(AppError::Storage)?;
+
+    if !target.avatar_path.is_empty() {
+        let _ = storage.delete(&target.avatar_path).await;
+    }
+    repository::users::update_avatar(&state.db, target.id, &saved).await?;
+    // 改的是自己：同步当前登录会话，避免界面头像停留旧值
+    if target.id == operator.id {
+        let path = saved.clone();
+        state.auth.update_user(|s| s.avatar_path = path).await;
+    }
+    Ok(saved)
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DeleteUsersPayload {
     pub ids: Vec<i64>,
@@ -184,6 +280,20 @@ pub async fn update_user(
             let hash = hash_password(&pwd)?;
             repository::users::update_password(&state.db, target.id, &hash).await?;
         }
+    }
+
+    // 编辑的是自己：同步当前登录会话中的资料
+    if target.id == operator.id {
+        let un = username.to_string();
+        let nn = nickname.to_string();
+        let em = email.to_string();
+        let bio = payload.bio.clone();
+        state.auth.update_user(|s| {
+            s.username = un;
+            s.nickname = nn;
+            s.email = em;
+            s.bio = bio;
+        }).await;
     }
     Ok(())
 }

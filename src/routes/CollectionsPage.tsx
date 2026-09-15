@@ -1,5 +1,5 @@
 // 合集管理页（自定义分类）
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -33,6 +33,8 @@ import { collectionApi, imageApi, resourceApi, assetUrl } from '../lib/tauri';
 import type { Collection, CreateCollection, Resource } from '../types/models';
 import { useSelection, CardCheckbox, BatchBar, runBatchAction } from '../components/batch';
 import { CardContextMenu } from '../components/CardContextMenu';
+import { Pagination } from '../components/Pagination';
+import { MarkdownEditor } from '../components/MarkdownEditor';
 import { useSharedStyles } from '../styles/shared';
 import { usePerms } from '../hooks/usePerms';
 
@@ -43,6 +45,7 @@ interface EditState {
   visibility: string;
   accessPassword: string;
   thumbnailPath: string;
+  content: string;
 }
 
 const emptyEdit: EditState = {
@@ -52,13 +55,14 @@ const emptyEdit: EditState = {
   visibility: 'private',
   accessPassword: '',
   thumbnailPath: '',
+  content: '',
 };
 
 export function CollectionsPage() {
   const s = useSharedStyles();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const canCollection = usePerms().can('collection');
+  const canCollection = usePerms().can('collection_own');
   const selection = useSelection();
   const [editOpen, setEditOpen] = useState(false);
   const [editState, setEditState] = useState<EditState>(emptyEdit);
@@ -68,11 +72,25 @@ export function CollectionsPage() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<Resource[]>([]);
   const [searching, setSearching] = useState(false);
+  const [page, setPage] = useState(1);
+  const [keyword, setKeyword] = useState('');
 
-  const { data: collections, isLoading } = useQuery<Collection[]>({
-    queryKey: ['collections'],
-    queryFn: collectionApi.list,
+  const { data, isLoading } = useQuery({
+    queryKey: ['collections', 'paged', page, keyword],
+    queryFn: () => collectionApi.listPage(page, 36, keyword || undefined),
   });
+  const collections = data?.items;
+  const total = data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / 36));
+
+  // 删除后当前页空了自动回退；翻页清空选择
+  useEffect(() => {
+    if (!isLoading && page > 1 && collections && collections.length === 0) setPage(page - 1);
+  }, [isLoading, collections, page]);
+  useEffect(() => {
+    selection.clear();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, keyword]);
 
   const createMut = useMutation({
     mutationFn: (payload: CreateCollection) => collectionApi.create(payload),
@@ -112,6 +130,7 @@ export function CollectionsPage() {
       visibility: c.visibility,
       accessPassword: c.access_password,
       thumbnailPath: c.thumbnail_path,
+      content: c.content || '',
     });
     setError('');
     setEditResources([]);
@@ -188,6 +207,7 @@ export function CollectionsPage() {
       visibility: editState.visibility,
       access_password: editState.accessPassword,
       thumbnail_path: editState.thumbnailPath,
+      content: editState.content,
     };
     if (editState.id != null) {
       updateMut.mutate({ id: editState.id, payload });
@@ -234,6 +254,7 @@ export function CollectionsPage() {
           visibility: editState.visibility,
           access_password: editState.accessPassword,
           thumbnail_path: '',
+          content: editState.content,
         };
         const newId = await collectionApi.create(payload);
         const result = await imageApi.uploadCollectionImage(newId, filePath);
@@ -250,7 +271,7 @@ export function CollectionsPage() {
   };
 
   const viewResources = (c: Collection) => {
-    navigate(`/?collection=${c.id}`);
+    navigate(`/collection/${c.id}`);
   };
 
   const pending = createMut.isPending || updateMut.isPending;
@@ -259,24 +280,37 @@ export function CollectionsPage() {
     <div className={s.pageContainer}>
       <div className={s.pageHeader}>
         <h2 style={{ margin: 0 }}>合集管理</h2>
-        {canCollection && (
-          <Button
-            icon={<AddRegular />}
-            appearance="primary"
-            onClick={openCreate}
-          >
-            新建合集
-          </Button>
-        )}
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <Input
+            style={{ width: '200px' }}
+            placeholder="搜索合集"
+            value={keyword}
+            onChange={(_, d) => {
+              setKeyword(d.value);
+              setPage(1);
+            }}
+            contentBefore={<SearchRegular />}
+          />
+          {canCollection && (
+            <Button
+              icon={<AddRegular />}
+              appearance="primary"
+              onClick={openCreate}
+            >
+              新建合集
+            </Button>
+          )}
+        </div>
       </div>
 
       {isLoading ? (
         <Spinner label="加载中..." />
       ) : !collections || collections.length === 0 ? (
         <div className={s.emptyState}>
-          <p>暂无合集，点击右上角「新建合集」创建</p>
+          <p>{keyword ? '没有匹配的合集' : '暂无合集，点击右上角「新建合集」创建'}</p>
         </div>
       ) : (
+        <>
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '12px' }}>
           {collections.map((c) => (
             <CardContextMenu
@@ -362,6 +396,8 @@ export function CollectionsPage() {
             </CardContextMenu>
           ))}
         </div>
+        <Pagination page={page} totalPages={totalPages} total={total} onChange={setPage} />
+        </>
       )}
 
       {/* 新建/编辑对话框 */}
@@ -468,6 +504,15 @@ export function CollectionsPage() {
                     )}
                   </div>
                 </div>
+              </div>
+              <div className={s.field}>
+                <Label>合集正文（Markdown）</Label>
+                <MarkdownEditor
+                  value={editState.content}
+                  onChange={(v) => setEditState((s) => ({ ...s, content: v }))}
+                  height={320}
+                  placeholder="在此输入合集介绍正文..."
+                />
               </div>
               {editState.id != null && (
                 <div className={s.field} style={{ marginBottom: 0, marginTop: '12px' }}>

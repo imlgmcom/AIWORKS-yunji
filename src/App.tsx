@@ -9,6 +9,8 @@ import { DetailPage } from './routes/DetailPage';
 import { EditPage } from './routes/EditPage';
 import { TagsPage } from './routes/TagsPage';
 import { CollectionsPage } from './routes/CollectionsPage';
+import { CollectionDetailPage } from './routes/CollectionDetailPage';
+import { AuthorsPage } from './routes/AuthorsPage';
 import { CategoriesPage } from './routes/CategoriesPage';
 import { TrashPage } from './routes/TrashPage';
 import { AdminPage } from './routes/AdminPage';
@@ -22,7 +24,9 @@ export const router = createHashRouter([
       { index: true, element: <ListPage /> },
       { path: 'detail/:rid', element: <DetailPage /> },
       { path: 'tags', element: <TagsPage /> },
+      { path: 'authors', element: <AuthorsPage /> },
       { path: 'collections', element: <CollectionsPage /> },
+      { path: 'collection/:cid', element: <CollectionDetailPage /> },
       {
         path: 'categories',
         element: <RequirePerm feature="article"><CategoriesPage /></RequirePerm>,

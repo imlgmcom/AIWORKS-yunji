@@ -2,7 +2,8 @@
 use tauri::State;
 
 use crate::auth::{
-    ensure_readable, require_feature, viewer_level, FEATURE_ARTICLE, FEATURE_TRASH,
+    ensure_readable, require_feature, viewer_level, FEATURE_ARTICLE, FEATURE_ARTICLE_OWN,
+    FEATURE_TRASH,
 };
 use crate::db::repository;
 use crate::error::{AppError, CmdResult};
@@ -11,6 +12,21 @@ use crate::state::AppState;
 pub use repository::resources::{
     BatchUpdate, CreateItem, CreateResource, ListParams, PaginatedResources, Resource,
 };
+
+/// 选择文章写操作的权限：作者本人用「文章(自己)」，他人用「文章(管理)」
+async fn require_article_write(
+    state: &AppState,
+    resource_user_id: Option<i64>,
+) -> Result<crate::auth::UserSession, AppError> {
+    let user = crate::auth::require_login(&state.auth).await?;
+    let is_own = resource_user_id.map(|uid| uid == user.id).unwrap_or(false);
+    let key = if is_own {
+        FEATURE_ARTICLE_OWN
+    } else {
+        FEATURE_ARTICLE
+    };
+    require_feature(&state.db, &state.auth, key).await
+}
 
 /// 为「只上传了种子、没有填磁力链接」的磁力种子项，从种子文件反推磁力链接。
 /// info_hash = SHA1(info 字典)，另附带 dn（种子名）和 tr（tracker）。
@@ -64,10 +80,15 @@ pub async fn create_resource(
     state: State<'_, AppState>,
     mut payload: CreateResource,
 ) -> CmdResult<i64> {
-    require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    // 新建文章属于作者本人，用「文章(自己)」权限
+    let operator = require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
+    if payload.title.trim().is_empty() {
+        return Err(AppError::BadRequest("标题不能为空".into()));
+    }
+    payload.title = payload.title.trim().to_string();
     // 上传了种子但没填磁力链接：保存时自动反推
     fill_magnets_from_torrents(&state, &mut payload.items).await;
-    let rid = repository::resources::create(&state.db, &payload).await?;
+    let rid = repository::resources::create(&state.db, &payload, operator.id).await?;
     // 同步附件项
     if !payload.items.is_empty() {
         repository::resources::sync_items(&state.db, rid, &payload.items).await?;
@@ -89,7 +110,12 @@ pub async fn update_resource(
     rid: i64,
     mut payload: CreateResource,
 ) -> CmdResult<()> {
-    require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    let existing = repository::resources::get(&state.db, rid).await?;
+    let _user = require_article_write(&state, existing.user_id).await?;
+    if payload.title.trim().is_empty() {
+        return Err(AppError::BadRequest("标题不能为空".into()));
+    }
+    payload.title = payload.title.trim().to_string();
     // 上传了种子但没填磁力链接：保存时自动反推
     fill_magnets_from_torrents(&state, &mut payload.items).await;
     repository::resources::update(&state.db, rid, &payload).await?;
@@ -106,6 +132,7 @@ pub async fn batch_update_resources(
     state: State<'_, AppState>,
     payload: BatchUpdate,
 ) -> CmdResult<()> {
+    // 批量操作视为管理行为，用「文章(管理)」权限
     require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
     repository::resources::batch_update(&state.db, &payload).await?;
     Ok(())
@@ -116,7 +143,8 @@ pub async fn delete_resource(
     state: State<'_, AppState>,
     rid: i64,
 ) -> CmdResult<()> {
-    require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    let existing = repository::resources::get(&state.db, rid).await?;
+    let _user = require_article_write(&state, existing.user_id).await?;
     repository::resources::soft_delete(&state.db, rid).await?;
     Ok(())
 }
@@ -165,6 +193,22 @@ pub async fn list_trash_resources(
     Ok(repository::resources::list_deleted(&state.db).await?)
 }
 
+#[tauri::command]
+pub async fn list_trash_resources_page(
+    state: State<'_, AppState>,
+    page: i64,
+    page_size: i64,
+) -> CmdResult<repository::Paged<Resource>> {
+    require_feature(&state.db, &state.auth, FEATURE_TRASH).await?;
+    let (page, page_size) = repository::clamp_page(page, page_size);
+    Ok(repository::resources::list_deleted_paged(
+        &state.db,
+        page_size,
+        (page - 1) * page_size,
+    )
+    .await?)
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct AccessPayload {
     pub password: String,
@@ -195,7 +239,8 @@ pub async fn upload_resource_file(
     file_path: String,
     subdir: String,
 ) -> CmdResult<String> {
-    require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    // 附件上传服务于文章编辑，用「文章(自己)」权限
+    require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let storage = state.storage.get().await;
 
     let data = std::fs::read(&file_path).map_err(crate::error::AppError::Io)?;

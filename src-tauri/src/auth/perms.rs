@@ -11,7 +11,12 @@ use crate::error::{AppError, CmdResult};
 use crate::auth::state::{AuthState, UserSession};
 
 /// 功能权限设置键
+/// 文章/合集拆分为两个维度：
+///   - *_own：新建、编辑、删除「自己的」内容
+///   - 无后缀（manage）：管理「他人的」内容（编辑/删除/批量操作）
+pub const FEATURE_ARTICLE_OWN: &str = "perm_article_own";
 pub const FEATURE_ARTICLE: &str = "perm_article";
+pub const FEATURE_COLLECTION_OWN: &str = "perm_collection_own";
 pub const FEATURE_COLLECTION: &str = "perm_collection";
 pub const FEATURE_TAG: &str = "perm_tag";
 pub const FEATURE_TRASH: &str = "perm_trash";

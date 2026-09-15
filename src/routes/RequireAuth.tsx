@@ -21,8 +21,10 @@ export function RequireAuth({ children }: { children: React.ReactNode }) {
 }
 
 const FEATURE_LABEL: Record<Feature, string> = {
-  article: '文章管理',
-  collection: '合集管理',
+  article_own: '文章（自己）',
+  article: '文章（管理他人）',
+  collection_own: '合集（自己）',
+  collection: '合集（管理他人）',
   tag: '标签管理',
   trash: '回收站管理',
   user: '用户管理',

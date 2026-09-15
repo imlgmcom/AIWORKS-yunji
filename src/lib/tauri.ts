@@ -2,6 +2,7 @@
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import type {
   AdminUser,
+  AuthorInfo,
   Category,
   CategoryFlat,
   Collection,
@@ -12,6 +13,7 @@ import type {
   Image,
   ListParams,
   PaginatedResources,
+  Paged,
   ParsedTorrentFile,
   Resource,
   ResourceFile,
@@ -33,6 +35,11 @@ export const authApi = {
   changeUsername: (newUsername: string, password: string) =>
     invoke<UserInfo>('auth_change_username', { payload: { new_username: newUsername, password } }),
   uploadAvatar: (filePath: string) => invoke<string>('auth_upload_avatar', { filePath }),
+  uploadAvatarBytes: (data: ArrayBuffer | Uint8Array, ext: string) =>
+    invoke<string>('auth_upload_avatar_bytes', {
+      data: Array.from(data instanceof Uint8Array ? data : new Uint8Array(data)),
+      ext,
+    }),
   changePassword: (oldPassword: string, newPassword: string) =>
     invoke<void>('auth_change_password', { payload: { old_password: oldPassword, new_password: newPassword } }),
 };
@@ -40,11 +47,28 @@ export const authApi = {
 // --- Users（用户管理，需用户管理权限） ---
 export const userApi = {
   list: () => invoke<AdminUser[]>('list_users'),
+  listPage: (page: number, pageSize: number, search?: string) =>
+    invoke<Paged<AdminUser>>('list_users_page', { page, pageSize, search: search || null }),
   deleteMany: (ids: number[]) => invoke<void>('delete_users', { payload: { ids } }),
   resetPassword: (userId: number, newPassword: string) =>
     invoke<void>('reset_user_password', { payload: { user_id: userId, new_password: newPassword } }),
   update: (payload: import('../types/models').AdminUpdateUser) =>
     invoke<void>('update_user', { payload }),
+  setAvatar: (userId: number, data: ArrayBuffer | Uint8Array, ext: string) =>
+    invoke<string>('admin_set_user_avatar', {
+      payload: {
+        user_id: userId,
+        ext,
+        data: Array.from(data instanceof Uint8Array ? data : new Uint8Array(data)),
+      },
+    }),
+};
+
+// --- Authors（作者列表，公开） ---
+export const authorApi = {
+  list: () => invoke<AuthorInfo[]>('list_authors'),
+  listPage: (page: number, pageSize: number, search?: string) =>
+    invoke<Paged<AuthorInfo>>('list_authors_page', { page, pageSize, search: search || null }),
 };
 
 // --- Resources ---
@@ -57,6 +81,8 @@ export const resourceApi = {
   restore: (rid: number) => invoke<void>('restore_resource', { rid }),
   permanentDelete: (rid: number) => invoke<void>('permanent_delete_resource', { rid }),
   listTrash: () => invoke<Resource[]>('list_trash_resources'),
+  listTrashPage: (page: number, pageSize: number) =>
+    invoke<Paged<Resource>>('list_trash_resources_page', { page, pageSize }),
   checkAccess: (rid: number, password: string) =>
     invoke<boolean>('check_resource_access', { rid, payload: { password } }),
   uploadFile: (filePath: string, subdir: string) =>
@@ -93,6 +119,8 @@ export const imageApi = {
 // --- Tags ---
 export const tagApi = {
   list: () => invoke<Tag[]>('list_tags'),
+  listPage: (page: number, pageSize: number, search?: string) =>
+    invoke<Paged<Tag>>('list_tags_page', { page, pageSize, search: search || null }),
   create: (name: string) => invoke<number>('create_tag', { name }),
   rename: (tagId: number, name: string) => invoke<void>('rename_tag', { tagId, name }),
   delete: (tagId: number) => invoke<void>('delete_tag', { tagId }),
@@ -103,6 +131,8 @@ export const tagApi = {
 // --- Collections (自定义分类) ---
 export const collectionApi = {
   list: () => invoke<Collection[]>('list_collections'),
+  listPage: (page: number, pageSize: number, search?: string) =>
+    invoke<Paged<Collection>>('list_collections_page', { page, pageSize, search: search || null }),
   get: (cid: number) => invoke<Collection>('get_collection', { cid }),
   create: (payload: CreateCollection) => invoke<number>('create_collection', { payload }),
   update: (cid: number, payload: CreateCollection) => invoke<void>('update_collection', { cid, payload }),
@@ -134,6 +164,9 @@ export const settingsApi = {
   get: () => invoke<Record<string, string>>('get_settings'),
   update: (settings: Record<string, string>) => invoke<void>('update_settings', { settings }),
   getUploadBaseDir: () => invoke<string>('get_upload_base_dir'),
+  uploadLogo: (filePath: string, kind: 'image' | 'icon') =>
+    invoke<string>('upload_logo', { filePath, kind }),
+  clearLogo: (kind: 'image' | 'icon') => invoke<void>('clear_logo', { kind }),
 };
 
 // --- Torrent / BT 种子文件列表 ---
@@ -235,8 +268,37 @@ export function assetUrl(relPath: string): string {
 
 // --- Markdown 正文中的本地附件路径重写 ---
 // 正文中插入的图片/附件以存储相对路径（如 content/xxx.png）保存，
-// 渲染时需转换为 asset:// URL 才能显示/打开。
+// 渲染时需转换为 asset URL 才能显示/打开。
 const ASSET_DEST_RE = /^(thumbnails|gallery|content|files|torrents|magnets|avatars)\//i;
+
+// --- 编辑期本地暂存资源 ---
+// 选择文件后不立即上传，markdown 中插入 __pending__/<token>/file 占位符，
+// 预览时映射回本地文件；文章保存时才真正上传并把占位符替换为存储相对路径。
+const pendingAssets = new Map<string, string>(); // token -> 本地绝对路径
+const PENDING_RE = /^__pending__\/([^/]+)\//i;
+
+export function registerPendingAsset(localPath: string): string {
+  const token = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+  pendingAssets.set(token, localPath);
+  // 固定后缀，避免原始文件名中的空格/特殊字符破坏 markdown 语法
+  return `__pending__/${token}/file`;
+}
+
+export function listPendingAssets(): [string, string][] {
+  return Array.from(pendingAssets.entries());
+}
+
+export function clearPendingAsset(token: string): void {
+  pendingAssets.delete(token);
+}
+
+/** 若是 __pending__ 占位符则解析为本地 asset URL，否则返回 null */
+function resolvePending(url: string): string | null {
+  const m = PENDING_RE.exec(url);
+  if (!m) return null;
+  const local = pendingAssets.get(m[1]);
+  return local ? convertFileSrc(local) : null;
+}
 
 /**
  * 重写 md2html 产出的 HTML 中的本地资源引用。
@@ -249,6 +311,11 @@ export function rewriteAssetHtml(html: string, mode: 'editor' | 'view'): string 
     const replaced = attrs.replace(
       /\b(src|href)\s*=\s*(["'])(.*?)\2/gi,
       (m, attr: string, q: string, url: string) => {
+        // 编辑期本地暂存资源：编辑器预览映射回本地文件
+        if (mode === 'editor') {
+          const pending = resolvePending(url);
+          if (pending) return `${attr}=${q}${pending}${q}`;
+        }
         if (!ASSET_DEST_RE.test(url)) return m;
         if (isImg || mode === 'editor') return `${attr}=${q}${assetUrl(url)}${q}`;
         return `href=${q}#${q} data-asset=${q}${url}${q}`;
@@ -262,11 +329,21 @@ export function rewriteAssetHtml(html: string, mode: 'editor' | 'view'): string 
 export function rewriteAssetDom(root: HTMLElement): void {
   root.querySelectorAll('img').forEach((img) => {
     const src = img.getAttribute('src') || '';
-    if (ASSET_DEST_RE.test(src)) img.setAttribute('src', assetUrl(src));
+    const pending = resolvePending(src);
+    if (pending) {
+      img.setAttribute('src', pending);
+    } else if (ASSET_DEST_RE.test(src)) {
+      img.setAttribute('src', assetUrl(src));
+    }
   });
   root.querySelectorAll<HTMLAnchorElement>('a').forEach((a) => {
     const href = a.getAttribute('href') || '';
-    if (ASSET_DEST_RE.test(href)) a.setAttribute('href', assetUrl(href));
+    const pending = resolvePending(href);
+    if (pending) {
+      a.setAttribute('href', pending);
+    } else if (ASSET_DEST_RE.test(href)) {
+      a.setAttribute('href', assetUrl(href));
+    }
   });
 }
 
@@ -274,7 +351,7 @@ export function rewriteAssetDom(root: HTMLElement): void {
 export interface OrphanFile {
   path: string;
   name: string;
-  category: 'thumbnail' | 'gallery' | 'content' | 'file' | 'torrent' | 'magnet' | 'avatar' | 'other';
+  category: 'thumbnail' | 'gallery' | 'content' | 'file' | 'torrent' | 'magnet' | 'avatar' | 'logo' | 'other';
   size: number;
   modified: number;
   is_image: boolean;

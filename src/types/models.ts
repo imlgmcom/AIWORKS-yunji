@@ -13,13 +13,33 @@ export interface Resource {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  user_id?: number | null;
   tags?: TagRef[];
   collections?: CollectionRef[];
   category?: CategoryRef | null;
   items?: ResourceItem[];
   images?: ImageRef[];
+  /** 作者（用户已删除时为 null） */
+  author?: AuthorRef | null;
   /** 资源包含的附件类型聚合（列表页显示类型徽章） */
   item_types?: string[];
+}
+
+export interface AuthorRef {
+  id: number;
+  username: string;
+  nickname: string;
+  avatar_path: string;
+}
+
+/** 作者列表项 */
+export interface AuthorInfo {
+  id: number;
+  username: string;
+  nickname: string;
+  bio: string;
+  avatar_path: string;
+  resource_count: number;
 }
 
 export interface TagRef {
@@ -114,6 +134,12 @@ export interface PaginatedResources {
   page_size: number;
 }
 
+/** 通用分页返回 */
+export interface Paged<T> {
+  items: T[];
+  total: number;
+}
+
 export interface ListParams {
   page: number;
   page_size: number;
@@ -122,6 +148,7 @@ export interface ListParams {
   tag_id?: number;
   collection_id?: number;
   category_id?: number;
+  user_id?: number;
   sort?: string;
   direction?: string;
   include_deleted?: boolean;
@@ -193,10 +220,12 @@ export interface Collection {
   visibility: 'public' | 'private';
   access_password: string;
   thumbnail_path: string;
+  content: string;
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
   resource_count?: number;
+  user_id?: number | null;
 }
 
 export interface CreateCollection {
@@ -205,6 +234,7 @@ export interface CreateCollection {
   visibility?: string;
   access_password: string;
   thumbnail_path: string;
+  content?: string;
 }
 
 // --- 附件类型元数据 ---

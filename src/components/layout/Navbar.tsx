@@ -1,6 +1,6 @@
 // 侧边导航栏
 import { useNavigate, useLocation } from 'react-router-dom';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
   Button,
@@ -30,6 +30,8 @@ import {
   DocumentRegular,
   ChevronRightRegular,
   ChevronDownRegular,
+  PeopleRegular,
+  CubeRegular,
 } from '@fluentui/react-icons';
 import { useAuthStore } from '../../stores/authStore';
 import { usePerms } from '../../hooks/usePerms';
@@ -61,6 +63,42 @@ const useStyles = makeStyles({
     userSelect: 'none',
     color: tokens.colorBrandForeground1,
     textAlign: 'center',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: '30px',
+  },
+  logoRow: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: '8px',
+  },
+  logoIcon: {
+    fontSize: '24px',
+    color: tokens.colorBrandForeground1,
+  },
+  logoIconImg: {
+    height: '24px',
+    width: '24px',
+    objectFit: 'contain' as const,
+    borderRadius: '4px',
+    flexShrink: 0,
+  },
+  // 图片 LOGO：铺满整个左上角头部区域
+  headerImage: {
+    padding: 0,
+  },
+  brandImage: {
+    display: 'block',
+    width: '100%',
+    height: '64px',
+    cursor: 'pointer',
+  },
+  logoImageFull: {
+    display: 'block',
+    width: '100%',
+    height: '100%',
+    objectFit: 'cover' as const,
   },
   // 导航区域
   nav: {
@@ -149,17 +187,20 @@ export function Navbar() {
   const location = useLocation();
   const { user, logout } = useAuthStore();
   const { isAdmin, can } = usePerms();
-  const canArticle = can('article');
+  const canArticle = can('article_own');
   const canTrash = can('trash');
   const canUser = can('user');
   const canSettings = isAdmin || canUser;
-  const [siteName, setSiteName] = useState('云记');
-
-  useEffect(() => {
-    settingsApi.getPublic().then((s) => {
-      if (s.site_name) setSiteName(s.site_name);
-    }).catch(() => {});
-  }, []);
+  // 公开设置：站点名称 / LOGO 模式（与 usePerms 共享缓存，设置保存后自动刷新）
+  const { data: pubSettings } = useQuery({
+    queryKey: ['public-settings'],
+    queryFn: settingsApi.getPublic,
+    staleTime: 30_000,
+  });
+  const siteName = pubSettings?.site_name || '云记';
+  const logoMode = pubSettings?.logo_mode || 'text';
+  const logoImage = pubSettings?.logo_image_path || '';
+  const logoIcon = pubSettings?.logo_icon_path || '';
 
   // 与 ListPage 共享 categories-tree 缓存
   const { data: categories = [] } = useQuery<Category[]>({
@@ -196,11 +237,30 @@ export function Navbar() {
   return (
     <nav className={styles.root}>
       {/* 头部区域 - LOGO */}
-      <div className={styles.header}>
-        <div className={styles.brand} onClick={() => navigate('/')}>
-          {siteName}
+      {logoMode === 'image' && logoImage ? (
+        <div className={`${styles.header} ${styles.headerImage}`}>
+          <div className={styles.brandImage} onClick={() => navigate('/')} title={siteName}>
+            <img className={styles.logoImageFull} src={assetUrl(logoImage)} alt={siteName} />
+          </div>
         </div>
-      </div>
+      ) : (
+        <div className={styles.header}>
+          <div className={styles.brand} onClick={() => navigate('/')} title={siteName}>
+            {logoMode === 'icon_text' ? (
+              <span className={styles.logoRow}>
+                {logoIcon ? (
+                  <img className={styles.logoIconImg} src={assetUrl(logoIcon)} alt="" />
+                ) : (
+                  <CubeRegular className={styles.logoIcon} />
+                )}
+                <span>{siteName}</span>
+              </span>
+            ) : (
+              siteName
+            )}
+          </div>
+        </div>
+      )}
 
       {/* 导航区域 */}
       <div className={styles.nav}>
@@ -210,7 +270,7 @@ export function Navbar() {
             icon={<HomeRegular />}
             label="全部"
             path="/"
-            active={!isCategoryView}
+            active={currentPath === '/' && !isCategoryView}
           />
           {categories.map((cat) => (
             <CategoryNavItem key={cat.id} cat={cat} level={0} />
@@ -228,6 +288,11 @@ export function Navbar() {
             icon={<TagRegular />}
             label="标签"
             path="/tags"
+          />
+          <NavItem
+            icon={<PeopleRegular />}
+            label="作者"
+            path="/authors"
           />
           {canTrash && (
             <NavItem
@@ -316,18 +381,8 @@ function CategoryNavItem({ cat, level }: { cat: Category; level: number }) {
     <div>
       <div
         className={`${styles.navItem} ${isActive ? styles.navItemActive : ''}`}
-        style={{ paddingLeft: `${8 + level * 16}px` }}
+        style={{ paddingLeft: `${12 + level * 16}px` }}
       >
-        {hasChildren ? (
-          <span
-            style={{ cursor: 'pointer', width: '16px', display: 'flex', justifyContent: 'center', color: tokens.colorNeutralForeground3 }}
-            onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
-          >
-            {expanded ? <ChevronDownRegular fontSize={12} /> : <ChevronRightRegular fontSize={12} />}
-          </span>
-        ) : (
-          <span style={{ width: '16px' }} />
-        )}
         <span
           className={styles.navItemIcon}
           style={{ cursor: 'pointer', fontSize: '16px', color: isActive ? tokens.colorBrandForeground1 : tokens.colorNeutralForeground3 }}
@@ -344,6 +399,14 @@ function CategoryNavItem({ cat, level }: { cat: Category; level: number }) {
         </span>
         {cat.resource_count != null && cat.resource_count > 0 && (
           <span className={styles.navItemCount}>{cat.resource_count}</span>
+        )}
+        {hasChildren && (
+          <span
+            style={{ cursor: 'pointer', width: '16px', flexShrink: 0, display: 'flex', justifyContent: 'center', color: tokens.colorNeutralForeground3 }}
+            onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
+          >
+            {expanded ? <ChevronDownRegular fontSize={12} /> : <ChevronRightRegular fontSize={12} />}
+          </span>
         )}
       </div>
       {hasChildren && expanded && cat.children!.map((child) => (

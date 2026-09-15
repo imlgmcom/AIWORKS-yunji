@@ -18,6 +18,7 @@ import {
 import { PersonRegular, KeyRegular, CameraRegular } from '@fluentui/react-icons';
 import { useAuthStore } from '../stores/authStore';
 import { authApi, assetUrl } from '../lib/tauri';
+import { AvatarCropDialog } from '../components/AvatarCropDialog';
 
 const useStyles = makeStyles({
   container: {
@@ -64,8 +65,8 @@ export function ProfilePage() {
   const [bio, setBio] = useState('');
   const [profileMsg, setProfileMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  // 头像
-  const [avatarUploading, setAvatarUploading] = useState(false);
+  // 头像裁剪弹窗选中的本地文件
+  const [cropFile, setCropFile] = useState<string | null>(null);
 
   // 修改账户名
   const [newUsername, setNewUsername] = useState('');
@@ -100,24 +101,13 @@ export function ProfilePage() {
     }
   };
 
-  const handleUploadAvatar = async () => {
+  const handleSelectAvatar = async () => {
     const selected = await openDialog({
       multiple: false,
       filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'gif'] }],
     });
     const filePath = typeof selected === 'string' ? selected : null;
-    if (!filePath) return;
-    setAvatarUploading(true);
-    try {
-      await authApi.uploadAvatar(filePath);
-      // 重新获取最新用户信息（含新头像路径）
-      const fresh = await authApi.me();
-      if (fresh) setUser(fresh);
-    } catch (e: any) {
-      setProfileMsg({ ok: false, text: e.message || '头像上传失败' });
-    } finally {
-      setAvatarUploading(false);
-    }
+    if (filePath) setCropFile(filePath);
   };
 
   const saveUsername = async () => {
@@ -174,13 +164,12 @@ export function ProfilePage() {
             <Button
               appearance="outline"
               icon={<CameraRegular />}
-              onClick={handleUploadAvatar}
-              disabled={avatarUploading}
+              onClick={handleSelectAvatar}
             >
-              {avatarUploading ? '上传中...' : '更换头像'}
+              更换头像
             </Button>
             <span style={{ fontSize: '12px', color: tokens.colorNeutralForeground3 }}>
-              支持 jpg / png / webp / gif
+              支持 jpg / png / webp / gif，可选后裁剪
             </span>
           </div>
         </div>
@@ -284,6 +273,11 @@ export function ProfilePage() {
           修改密码
         </Button>
       </Card>
+
+      {/* 头像裁剪弹窗 */}
+      {cropFile && (
+        <AvatarCropDialog filePath={cropFile} onClose={() => setCropFile(null)} />
+      )}
     </div>
   );
 }

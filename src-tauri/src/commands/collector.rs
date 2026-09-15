@@ -11,7 +11,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::task::JoinSet;
 
-use crate::auth::{require_feature, FEATURE_ARTICLE};
+use crate::auth::{require_feature, FEATURE_ARTICLE_OWN};
 use crate::db::repository;
 use crate::error::{AppError, CmdResult};
 use crate::state::AppState;
@@ -237,7 +237,7 @@ pub async fn list_collectors(state: State<'_, AppState>) -> CmdResult<Vec<Collec
 /// 从本地文件导入第三方采集插件（文件名为 <id>.yunji.json）
 #[tauri::command]
 pub async fn import_collector(state: State<'_, AppState>, source_path: String) -> CmdResult<CollectorInfo> {
-    require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let dir = ensure_collectors_dir(&state)?;
     let raw = std::fs::read_to_string(&source_path).map_err(AppError::Io)?;
     let info = parse_collector(&raw, false)
@@ -567,7 +567,7 @@ pub async fn collector_set_thumbnail(
     url: String,
     referer: String,
 ) -> CmdResult<String> {
-    require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let storage = state.storage.get().await;
 
     let app_cb = app.clone();
@@ -621,7 +621,7 @@ pub async fn collector_add_images(
     urls: Vec<String>,
     referer: String,
 ) -> CmdResult<CollectImagesResult> {
-    require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let storage = state.storage.get().await;
     let task_total = urls.len();
 

@@ -2,7 +2,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::auth::{require_feature, FEATURE_ARTICLE, FEATURE_COLLECTION};
+use crate::auth::{require_feature, FEATURE_ARTICLE_OWN, FEATURE_COLLECTION_OWN};
 use crate::db::repository;
 use crate::error::CmdResult;
 use crate::state::AppState;
@@ -31,7 +31,7 @@ pub async fn upload_resource_image(
     rid: i64,
     file_path: String,
 ) -> CmdResult<UploadResult> {
-    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let storage = state.storage.get().await;
 
     // 读取文件
@@ -61,7 +61,7 @@ pub async fn delete_resource_image(
     state: State<'_, AppState>,
     img_id: i64,
 ) -> CmdResult<()> {
-    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let storage = state.storage.get().await;
     let path = repository::images::delete(&state.db, img_id).await?;
     let _ = storage.delete(&path).await;
@@ -74,7 +74,7 @@ pub async fn reorder_resource_images(
     rid: i64,
     image_ids: Vec<i64>,
 ) -> CmdResult<()> {
-    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     repository::images::reorder_for_resource(&state.db, rid, &image_ids).await?;
     Ok(())
 }
@@ -91,7 +91,7 @@ pub async fn set_resource_thumbnail(
     rid: i64,
     payload: SetThumbnailPayload,
 ) -> CmdResult<String> {
-    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let storage = state.storage.get().await;
 
     // 读取旧缩略图路径
@@ -132,7 +132,7 @@ pub async fn clear_resource_thumbnail(
     state: State<'_, AppState>,
     rid: i64,
 ) -> CmdResult<()> {
-    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    let _user = require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let storage = state.storage.get().await;
 
     let r = repository::resources::get(&state.db, rid).await?;
@@ -162,7 +162,7 @@ pub async fn upload_collection_image(
     cid: i64,
     file_path: String,
 ) -> CmdResult<UploadResult> {
-    let _user = require_feature(&state.db, &state.auth, FEATURE_COLLECTION).await?;
+    let _user = require_feature(&state.db, &state.auth, FEATURE_COLLECTION_OWN).await?;
     let storage = state.storage.get().await;
 
     let data = std::fs::read(&file_path).map_err(crate::error::AppError::Io)?;
@@ -187,7 +187,7 @@ pub async fn delete_collection_image(
     state: State<'_, AppState>,
     img_id: i64,
 ) -> CmdResult<()> {
-    let _user = require_feature(&state.db, &state.auth, FEATURE_COLLECTION).await?;
+    let _user = require_feature(&state.db, &state.auth, FEATURE_COLLECTION_OWN).await?;
     let storage = state.storage.get().await;
     let path = repository::images::delete_collection_image(&state.db, img_id).await?;
     let _ = storage.delete(&path).await;
@@ -200,7 +200,7 @@ pub async fn reorder_collection_images(
     cid: i64,
     image_ids: Vec<i64>,
 ) -> CmdResult<()> {
-    let _user = require_feature(&state.db, &state.auth, FEATURE_COLLECTION).await?;
+    let _user = require_feature(&state.db, &state.auth, FEATURE_COLLECTION_OWN).await?;
     repository::images::reorder_for_collection(&state.db, cid, &image_ids).await?;
     Ok(())
 }

@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use tauri::State;
 
-use crate::auth::{ensure_readable, require_feature, FEATURE_ARTICLE};
+use crate::auth::{ensure_readable, require_feature, FEATURE_ARTICLE_OWN};
 use crate::bencode::{self, TorrentFile as ParsedTorrentFile};
 use crate::db::repository;
 use crate::error::CmdResult;
@@ -85,7 +85,7 @@ pub async fn clear_resource_files(
     rid: i64,
     item_id: Option<i64>,
 ) -> CmdResult<()> {
-    require_feature(&state.db, &state.auth, FEATURE_ARTICLE).await?;
+    require_feature(&state.db, &state.auth, FEATURE_ARTICLE_OWN).await?;
     let item_id = item_id.unwrap_or(0);
     repository::torrent_files::clear(&state.db, rid, item_id).await?;
     Ok(())

@@ -263,19 +263,50 @@ pub async fn auth_upload_avatar(
     file_path: String,
 ) -> CmdResult<String> {
     let user = require_login(&state.auth).await?;
-    let storage = state.storage.get().await;
+    let ext = avatar_ext_from_path(&file_path)?;
+    let data = std::fs::read(&file_path).map_err(AppError::Io)?;
+    save_avatar(&state, &user, data, ext).await
+}
 
-    // 校验扩展名
-    let ext = std::path::Path::new(&file_path)
+/// 前端裁剪后的头像：直接接收图片字节（PNG/JPEG/WebP/GIF）
+#[tauri::command]
+pub async fn auth_upload_avatar_bytes(
+    state: State<'_, AppState>,
+    data: Vec<u8>,
+    ext: String,
+) -> CmdResult<String> {
+    let user = require_login(&state.auth).await?;
+    let ext = valid_avatar_ext(ext.trim_start_matches('.').to_lowercase())?;
+    if data.is_empty() || data.len() > 10 * 1024 * 1024 {
+        return Err(AppError::BadRequest("图片为空或超过 10MB".into()));
+    }
+    save_avatar(&state, &user, data, ext).await
+}
+
+fn avatar_ext_from_path(file_path: &str) -> Result<String, AppError> {
+    let ext = std::path::Path::new(file_path)
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif") {
-        return Err(AppError::BadRequest("仅支持 jpg/png/webp/gif 图片".into()));
-    }
+    valid_avatar_ext(ext)
+}
 
-    let data = std::fs::read(&file_path).map_err(AppError::Io)?;
+fn valid_avatar_ext(ext: String) -> Result<String, AppError> {
+    if matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "webp" | "gif") {
+        Ok(ext)
+    } else {
+        Err(AppError::BadRequest("仅支持 jpg/png/webp/gif 图片".into()))
+    }
+}
+
+async fn save_avatar(
+    state: &AppState,
+    user: &UserSession,
+    data: Vec<u8>,
+    ext: String,
+) -> CmdResult<String> {
+    let storage = state.storage.get().await;
     let filename = format!("avatar_{}.{}", user.id, ext);
     let saved = storage
         .save(bytes::Bytes::from(data), &filename, "avatars")

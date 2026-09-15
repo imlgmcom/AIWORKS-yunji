@@ -23,6 +23,8 @@ export interface ResourceCardProps {
   onTagClick?: (tagId: number) => void;
   /** 是否显示描述（默认 true） */
   showDescription?: boolean;
+  /** 是否显示标签（默认 true） */
+  showTags?: boolean;
   /** 视图模式 */
   viewMode?: ViewMode;
   /** 右键菜单事件转发（供 CardContextMenu 的 MenuTrigger 注入） */
@@ -39,6 +41,7 @@ export function ResourceCard({
   badges,
   onTagClick,
   showDescription = true,
+  showTags = true,
   viewMode = 'masonry',
   onContextMenu,
 }: ResourceCardProps) {
@@ -84,7 +87,7 @@ export function ResourceCard({
 
   // 标签单独成行，避免与附件类型图标挤在一起被误认为异常图标
   const tagsEl =
-    onTagClick && r.tags && r.tags.length > 0 ? (
+    showTags && onTagClick && r.tags && r.tags.length > 0 ? (
       <div className={s.cardTags}>
         {r.tags.slice(0, 3).map((t) => (
           <Badge

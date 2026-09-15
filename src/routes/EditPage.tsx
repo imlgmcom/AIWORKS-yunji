@@ -19,6 +19,7 @@ import {
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
+import { convertFileSrc } from '@tauri-apps/api/core';
 import {
   Card,
   Input,
@@ -50,6 +51,9 @@ import {
   categoryApi,
   assetUrl,
   collectorApi,
+  registerPendingAsset,
+  listPendingAssets,
+  clearPendingAsset,
 } from '../lib/tauri';
 import type { CreateItem, Resource, Tag, Image, Collection, Category } from '../types/models';
 import { MarkdownEditor } from '../components/MarkdownEditor';
@@ -82,10 +86,21 @@ const useStyles = makeStyles({
   gallery: { display: 'flex', gap: '8px', flexWrap: 'wrap' },
   galleryItem: {
     position: 'relative',
-    width: '100px',
-    height: '100px',
+    width: '120px',
+    height: '90px',
   },
   galleryImg: { width: '100%', height: '100%', objectFit: 'cover', borderRadius: '6px', cursor: 'move' },
+  galleryPending: {
+    position: 'absolute',
+    left: '2px',
+    bottom: '2px',
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    color: '#fff',
+    fontSize: '10px',
+    padding: '1px 6px',
+    borderRadius: '6px',
+    pointerEvents: 'none',
+  },
   galleryDelete: {
     position: 'absolute',
     top: '2px',
@@ -108,11 +123,15 @@ const useStyles = makeStyles({
 interface EditItem extends CreateItem {
   _id: string; // 临时 ID，用于 dnd-kit
   _isNew?: boolean;
+  /** 选中但尚未上传的本地文件路径，保存时才真正上传 */
+  localFilePath?: string;
 }
 
 interface EditImage {
   id: number | string;
   file_path: string;
+  /** 新建/未保存时选中的本地文件路径，保存时才真正上传 */
+  localPath?: string;
 }
 
 const genId = () => Math.random().toString(36).slice(2, 11);
@@ -165,11 +184,13 @@ function SortableImage({ img, onDelete }: { img: EditImage; onDelete: () => void
       className={styles.galleryItem}
     >
       <img
-        src={assetUrl(img.file_path)}
+        src={img.localPath ? convertFileSrc(img.localPath) : assetUrl(img.file_path)}
         className={styles.galleryImg}
         alt=""
+        title={img.localPath ? '保存时上传' : ''}
         {...listeners}
       />
+      {img.localPath && <span className={styles.galleryPending}>待保存</span>}
       <button className={styles.galleryDelete} onClick={onDelete}>
         ×
       </button>
@@ -194,6 +215,8 @@ export function EditPage() {
   const [readLevel, setReadLevel] = useState(0);
   const [accessPassword, setAccessPassword] = useState('');
   const [thumbnailPath, setThumbnailPath] = useState('');
+  // 选中但尚未上传的本地封面（保存时才上传）
+  const [pendingThumbnail, setPendingThumbnail] = useState<string | null>(null);
   const [tagIds, setTagIds] = useState<number[]>([]);
   const [newTagNames, setNewTagNames] = useState('');
   const [collectionIds, setCollectionIds] = useState<number[]>([]);
@@ -288,8 +311,11 @@ export function EditPage() {
   // 确保资源已保存（新建模式下先保存获取 rid），返回 rid
   const ensureSaved = async (): Promise<number> => {
     if (isEdit) return ridNum;
+    if (!title.trim()) {
+      throw new Error('请先填写标题再上传内容');
+    }
     // 新建模式：先保存资源
-    const submitItems = validateAndFilterItems();
+    const submitItems = await prepareItems();
     if (submitItems === null) throw new Error('附件校验失败');
     const resolvedTagIds = await resolveTagIds();
     const payload = {
@@ -316,23 +342,21 @@ export function EditPage() {
     return newId;
   };
 
-  // 缩略图上传
+  // 选择封面：仅本地暂存预览，保存时才上传
   const uploadThumbnail = async () => {
     const filePath = await pickFile(['jpg', 'jpeg', 'png', 'webp']);
     if (!filePath) return;
-    try {
-      const targetId = await ensureSaved();
-      const savedPath = await imageApi.setResourceThumbnail(targetId, filePath);
-      setThumbnailPath(savedPath);
-      queryClient.invalidateQueries({ queryKey: ['resource', targetId] });
-    } catch (e: any) {
-      setError(e.message || '上传失败');
-    }
+    setPendingThumbnail(filePath);
   };
 
   const clearThumbnail = async () => {
+    // 先清除本地暂存
+    if (pendingThumbnail) {
+      setPendingThumbnail(null);
+      return;
+    }
     try {
-      if (isEdit) {
+      if (isEdit && thumbnailPath) {
         await imageApi.clearResourceThumbnail(ridNum);
         queryClient.invalidateQueries({ queryKey: ['resource', ridNum] });
       }
@@ -342,35 +366,34 @@ export function EditPage() {
     }
   };
 
-  // 图集上传（支持多选并行上传）
+  // 选择图集图片：仅本地暂存预览，保存时才上传（无需先有标题/rid）
   const uploadGallery = async () => {
     const files = await pickImages();
     if (files.length === 0) return;
-    try {
-      const targetId = await ensureSaved();
-      // 并行上传所有选中图片
-      const results = await Promise.all(
-        files.map((fp) => imageApi.uploadResourceImage(targetId, fp)),
-      );
-      const newImgs: EditImage[] = results.map((r) => ({ id: r.id, file_path: r.file_path }));
-      setGallery((g) => [...g, ...newImgs]);
-      queryClient.invalidateQueries({ queryKey: ['resource-images', targetId] });
-    } catch (e: any) {
-      setError(e.message || '图片上传失败');
-    }
+    const temps: EditImage[] = files.map((fp) => ({
+      id: `temp_${genId()}`,
+      file_path: '',
+      localPath: fp,
+    }));
+    setGallery((g) => [...g, ...temps]);
   };
 
-  const deleteGalleryImage = async (imgId: number) => {
+  const deleteGalleryImage = async (img: EditImage) => {
+    // 本地暂存图：直接从列表移除即可
+    if (img.localPath) {
+      setGallery((g) => g.filter((im) => im.id !== img.id));
+      return;
+    }
     if (!isEdit) return;
     try {
-      await imageApi.deleteResourceImage(imgId);
-      setGallery((g) => g.filter((im) => im.id !== imgId));
+      await imageApi.deleteResourceImage(Number(img.id));
+      setGallery((g) => g.filter((im) => im.id !== img.id));
     } catch (e: any) {
       setError(e.message || '删除失败');
     }
   };
 
-  // Markdown 正文内上传图片/附件（不依赖 rid：先存到 content 目录，随正文引用）
+  // Markdown 正文内选择图片/附件：仅注册本地暂存（插入占位符），保存时才上传
   const uploadContentAsset = async (kind: 'image' | 'file') => {
     const selected = await openDialog({
       multiple: false,
@@ -380,9 +403,9 @@ export function EditPage() {
           : undefined,
     });
     if (typeof selected !== 'string') return null;
-    const savedPath = await resourceApi.uploadFile(selected, 'content');
     const name = selected.split(/[\\/]/).pop() || 'file';
-    return { path: savedPath, name };
+    const marker = registerPendingAsset(selected);
+    return { path: marker, name };
   };
 
   // 附件管理
@@ -405,24 +428,16 @@ export function EditPage() {
     const filePath = await pickFile();
     if (!filePath) return;
     const fileName = filePath.split(/[\\/]/).pop() || 'file';
-    try {
-      const savedPath = await resourceApi.uploadFile(filePath, 'files');
-      updateItem(id, { file_path: savedPath, file_name: fileName });
-    } catch (e: any) {
-      setError(e.message || '文件上传失败');
-    }
+    // 仅本地暂存，保存时才上传
+    updateItem(id, { file_path: '', file_name: fileName, localFilePath: filePath });
   };
 
   const uploadTorrent = async (id: string) => {
     const filePath = await pickFile(['torrent']);
     if (!filePath) return;
     const fileName = filePath.split(/[\\/]/).pop() || 'file.torrent';
-    try {
-      const savedPath = await resourceApi.uploadFile(filePath, 'torrents');
-      updateItem(id, { file_path: savedPath, file_name: fileName });
-    } catch (e: any) {
-      setError(e.message || '种子文件上传失败');
-    }
+    // 仅本地暂存，保存时才上传
+    updateItem(id, { file_path: '', file_name: fileName, localFilePath: filePath });
   };
 
   // dnd-kit 拖拽结束处理
@@ -445,24 +460,25 @@ export function EditPage() {
     if (oldIndex < 0 || newIndex < 0) return;
     const newGallery = arrayMove(gallery, oldIndex, newIndex);
     setGallery(newGallery);
-    if (isEdit) {
+    // 存在尚未上传的本地图片时，排序在保存时统一提交
+    if (isEdit && newGallery.every((im) => !im.localPath)) {
       const ordered = newGallery.map((im) => Number(im.id));
       imageApi.reorderResourceImages(ridNum, ordered).catch(() => {});
     }
   };
 
-  // 过滤无效附件项 + 磁力格式校验
-  const validateAndFilterItems = (): CreateItem[] | null => {
+  // 过滤无效附件项 + 磁力格式校验（保留 localFilePath，由调用方在保存时上传）
+  const validateAndFilterItems = (): EditItem[] | null => {
     const valid = items.filter((it) => {
       if (it.type === 'magnet_torrent') {
         // 必须至少有磁力链接或种子文件之一
-        return (it.content && it.content.trim()) || it.file_path;
+        return (it.content && it.content.trim()) || it.file_path || it.localFilePath;
       }
       if (it.type === 'link' || it.type === 'ed2k' || it.type === 'direct_link') {
         return it.content && it.content.trim();
       }
       if (it.type === 'file') {
-        return it.file_path;
+        return it.file_path || it.localFilePath;
       }
       return false;
     });
@@ -476,7 +492,31 @@ export function EditPage() {
         }
       }
     }
-    return valid.map(({ _id, _isNew, ...rest }) => rest);
+    return valid;
+  };
+
+  // 校验附件，并把本地暂存文件上传后组装成提交结构
+  const prepareItems = async (): Promise<CreateItem[] | null> => {
+    const valid = validateAndFilterItems();
+    if (valid === null) return null;
+    return Promise.all(
+      valid.map(async (it) => {
+        let filePath = it.file_path;
+        if (it.localFilePath) {
+          const subdir = it.type === 'magnet_torrent' ? 'torrents' : 'files';
+          filePath = await resourceApi.uploadFile(it.localFilePath, subdir);
+          // 写回 state，失败重试时不重复上传
+          updateItem(it._id, { file_path: filePath, localFilePath: undefined });
+        }
+        return {
+          type: it.type,
+          content: it.content?.trim() ?? '',
+          description: it.description ?? '',
+          file_path: filePath,
+          file_name: it.file_name ?? '',
+        };
+      }),
+    );
   };
 
   // 批量创建新标签，返回合并后的 tag_ids
@@ -584,28 +624,97 @@ export function EditPage() {
   // 保存
   const saveMut = useMutation({
     mutationFn: async () => {
-      const submitItems = validateAndFilterItems();
+      // 1. 校验附件并上传本地暂存的附件/种子
+      const submitItems = await prepareItems();
       if (submitItems === null) return;
       const resolvedTagIds = await resolveTagIds();
-      const payload = {
-        title: title.trim(),
-        description: description.trim(),
-        content: content.trim(),
-        status,
-        read_level: readLevel,
-        access_password: accessPassword,
-        thumbnail_path: thumbnailPath,
-        tag_ids: resolvedTagIds,
-        collection_ids: collectionIds,
-        category_id: categoryId,
-        items: submitItems,
-      };
+
+      // 2. 上传正文内本地暂存的图片/附件，替换占位符为存储相对路径
+      let finalContent = content;
+      for (const [token, localPath] of listPendingAssets()) {
+        const marker = `__pending__/${token}/file`;
+        if (!finalContent.includes(marker)) {
+          clearPendingAsset(token);
+          continue;
+        }
+        const relPath = await resourceApi.uploadFile(localPath, 'content');
+        finalContent = finalContent.split(marker).join(relPath);
+        clearPendingAsset(token);
+      }
+      setContent(finalContent);
+
+      // 3. 新建：先创建文章拿到 id（封面/图集随后上传）
       let savedId = ridNum;
-      if (isEdit) {
-        await resourceApi.update(ridNum, payload);
-      } else {
-        savedId = await resourceApi.create(payload);
+      if (!isEdit) {
+        savedId = await resourceApi.create({
+          title: title.trim(),
+          description: description.trim(),
+          content: finalContent.trim(),
+          status,
+          read_level: readLevel,
+          access_password: accessPassword,
+          // 有本地待传封面时先留空，上传后由 setResourceThumbnail 写回
+          thumbnail_path: pendingThumbnail ? '' : thumbnailPath,
+          tag_ids: resolvedTagIds,
+          collection_ids: collectionIds,
+          category_id: categoryId,
+          items: submitItems,
+        });
         setCurrentRid(savedId);
+      }
+
+      // 4. 上传本地暂存的封面
+      let finalThumbnail = thumbnailPath;
+      if (pendingThumbnail) {
+        finalThumbnail = await imageApi.setResourceThumbnail(savedId, pendingThumbnail);
+        setThumbnailPath(finalThumbnail);
+        setPendingThumbnail(null);
+      }
+
+      // 5. 上传本地暂存的图集图片（保留当前显示顺序），得到 临时id -> 真实id 映射
+      const idMap = new Map<string, number>();
+      const pending = gallery.filter((im) => im.localPath);
+      const uploaded = await Promise.all(
+        pending.map(async (im) => {
+          const r = await imageApi.uploadResourceImage(savedId, im.localPath!);
+          return { tempId: String(im.id), realId: r.id, filePath: r.file_path };
+        }),
+      );
+      for (const u of uploaded) idMap.set(u.tempId, u.realId);
+      if (uploaded.length > 0) {
+        setGallery((g) =>
+          g.map((im) => {
+            const realId = idMap.get(String(im.id));
+            return realId != null
+              ? { id: realId, file_path: uploaded.find((u) => u.realId === realId)!.filePath }
+              : im;
+          }),
+        );
+      }
+
+      // 6. 按当前顺序提交排序
+      const orderedIds = gallery.map((im) =>
+        im.localPath ? idMap.get(String(im.id))! : Number(im.id),
+      );
+      if (orderedIds.length > 0) {
+        await imageApi.reorderResourceImages(savedId, orderedIds);
+      }
+
+      // 7. 编辑已有文章（或新建时带封面）：更新正文等字段
+      if (isEdit || pendingThumbnail) {
+        await resourceApi.update(savedId, {
+          title: title.trim(),
+          description: description.trim(),
+          content: finalContent.trim(),
+          status,
+          read_level: readLevel,
+          access_password: accessPassword,
+          thumbnail_path: finalThumbnail,
+          tag_ids: resolvedTagIds,
+          collection_ids: collectionIds,
+          category_id: categoryId,
+          items: submitItems,
+        });
       }
       return savedId;
     },
@@ -813,10 +922,14 @@ export function EditPage() {
 
       {/* 缩略图 */}
       <Card style={{ padding: '16px' }}>
-        <Label>缩略图</Label>
+        <Label>缩略图{pendingThumbnail ? '（保存后上传）' : ''}</Label>
         <div className={styles.thumbRow}>
-          {thumbnailPath ? (
-            <img className={styles.thumb} src={assetUrl(thumbnailPath)} alt="缩略图" />
+          {pendingThumbnail || thumbnailPath ? (
+            <img
+              className={styles.thumb}
+              src={pendingThumbnail ? convertFileSrc(pendingThumbnail) : assetUrl(thumbnailPath)}
+              alt="缩略图"
+            />
           ) : (
             <div className={styles.thumb} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: tokens.colorNeutralForeground3 }}>
               无
@@ -824,9 +937,9 @@ export function EditPage() {
           )}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
             <Button appearance="outline" size="small" icon={<ArrowUploadRegular />} onClick={uploadThumbnail}>
-              上传
+              {pendingThumbnail ? '重新选择' : '上传'}
             </Button>
-            {thumbnailPath && (
+            {(pendingThumbnail || thumbnailPath) && (
               <Button appearance="subtle" size="small" icon={<DeleteRegular />} onClick={clearThumbnail}>
                 清除
               </Button>
@@ -905,12 +1018,14 @@ export function EditPage() {
                             </Button>
                             {it.file_name && (
                               <>
-                                <Badge appearance="outline">{it.file_name}</Badge>
+                                <Badge appearance={it.localFilePath ? 'tint' : 'outline'} title={it.localFilePath ? '保存后上传' : undefined}>
+                                  {it.file_name}{it.localFilePath ? ' · 待保存' : ''}
+                                </Badge>
                                 <Button
                                   size="small"
                                   appearance="subtle"
                                   icon={<DeleteRegular />}
-                                  onClick={() => updateItem(it._id, { file_path: '', file_name: '' })}
+                                  onClick={() => updateItem(it._id, { file_path: '', file_name: '', localFilePath: undefined })}
                                 />
                               </>
                             )}
@@ -985,7 +1100,7 @@ export function EditPage() {
                   <SortableImage
                     key={im.id}
                     img={im}
-                    onDelete={() => im.id !== 'temp' && deleteGalleryImage(Number(im.id))}
+                    onDelete={() => deleteGalleryImage(im)}
                   />
                 ))}
               </div>

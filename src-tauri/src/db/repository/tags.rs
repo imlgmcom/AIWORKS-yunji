@@ -25,6 +25,59 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Tag>, AppError> {
         .collect())
 }
 
+/// 分页查询标签（可选按名称模糊搜索）
+pub async fn list_paged(
+    pool: &SqlitePool,
+    limit: i64,
+    offset: i64,
+    search: Option<&str>,
+) -> Result<crate::db::repository::Paged<Tag>, AppError> {
+    let like = search.filter(|s| !s.trim().is_empty()).map(|s| format!("%{}%", s.trim()));
+
+    let total: i64 = if like.is_some() {
+        sqlx::query_scalar("SELECT COUNT(*) FROM tags WHERE name LIKE ?1")
+            .bind(like.as_deref().unwrap_or("%"))
+            .fetch_one(pool)
+            .await?
+    } else {
+        sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+            .fetch_one(pool)
+            .await?
+    };
+
+    let rows = if like.is_some() {
+        sqlx::query_as::<_, (i64, String, i64)>(
+            "SELECT t.id, t.name, COUNT(rt.resource_id) as count \
+             FROM tags t LEFT JOIN resource_tags rt ON rt.tag_id = t.id \
+             WHERE t.name LIKE ?1 \
+             GROUP BY t.id, t.name ORDER BY t.name LIMIT ?2 OFFSET ?3",
+        )
+        .bind(like.as_deref().unwrap_or("%"))
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?
+    } else {
+        sqlx::query_as::<_, (i64, String, i64)>(
+            "SELECT t.id, t.name, COUNT(rt.resource_id) as count \
+             FROM tags t LEFT JOIN resource_tags rt ON rt.tag_id = t.id \
+             GROUP BY t.id, t.name ORDER BY t.name LIMIT ?1 OFFSET ?2",
+        )
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?
+    };
+
+    Ok(crate::db::repository::Paged {
+        items: rows
+            .into_iter()
+            .map(|(id, name, count)| Tag { id, name, count })
+            .collect(),
+        total,
+    })
+}
+
 pub async fn create(pool: &SqlitePool, name: &str) -> Result<i64, AppError> {
     let result = sqlx::query("INSERT INTO tags (name) VALUES (?)")
         .bind(name)

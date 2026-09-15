@@ -15,6 +15,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  Avatar,
   makeStyles,
   tokens,
 } from '@fluentui/react-components';
@@ -34,82 +35,132 @@ import {
   WarningRegular,
 } from '@fluentui/react-icons';
 import { resourceApi, imageApi, torrentApi, assetUrl } from '../lib/tauri';
-import { formatTime, formatBytes } from '../lib/format';
+import { formatTime, relativeTime, formatBytes } from '../lib/format';
 import { usePerms } from '../hooks/usePerms';
 import type { ResourceItem, Image, ParsedTorrentFile, FetchStatus } from '../types/models';
 import { MarkdownView } from '../components/MarkdownView';
 
 const useStyles = makeStyles({
-  container: { display: 'flex', flexDirection: 'column', gap: '16px' },
+  container: { display: 'flex', flexDirection: 'column', gap: '24px' },
   toolbar: {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: '8px',
   },
-  title: { fontSize: '22px', fontWeight: 700, margin: 0 },
+  header: {
+    display: 'flex',
+    gap: '20px',
+    alignItems: 'flex-start',
+    '@media (max-width: 640px)': {
+      flexDirection: 'column',
+    },
+  },
+  thumb: {
+    width: '212px',
+    height: '150px',
+    objectFit: 'cover',
+    borderRadius: '10px',
+    backgroundColor: tokens.colorNeutralBackground3,
+    flexShrink: 0,
+  },
+  headerMain: {
+    flex: 1,
+    minWidth: 0,
+  },
+  title: { fontSize: '28px', fontWeight: 700, margin: 0, lineHeight: 1.3 },
   desc: {
     color: tokens.colorNeutralForeground2,
     whiteSpace: 'pre-wrap',
     margin: 0,
+    fontSize: '15px',
+    lineHeight: 1.7,
   },
-  meta: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap', fontSize: '12px', color: tokens.colorNeutralForeground3 },
+  descBlock: {
+    margin: 0,
+    fontSize: '14px',
+    lineHeight: 1.7,
+    color: tokens.colorNeutralForeground2,
+    fontStyle: 'italic',
+    position: 'relative',
+    paddingLeft: '18px',
+    '&::before': {
+      content: '"“"',
+      position: 'absolute',
+      left: 0,
+      top: '-2px',
+      fontSize: '22px',
+      color: tokens.colorBrandForeground1,
+      fontStyle: 'normal',
+      lineHeight: 1,
+    },
+  },
+  meta: { display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', fontSize: '13px', color: tokens.colorNeutralForeground3 },
   tags: { display: 'flex', gap: '6px', flexWrap: 'wrap' },
+  sectionTitle: {
+    fontSize: '15px',
+    fontWeight: 600,
+    margin: 0,
+    color: tokens.colorNeutralForeground1,
+  },
   content: {
-    padding: '12px 16px',
-    borderRadius: '8px',
+    padding: '20px 24px',
+    borderRadius: '12px',
     border: `1px solid ${tokens.colorNeutralStroke2}`,
     backgroundColor: tokens.colorNeutralBackground1,
-    lineHeight: 1.7,
-    '& img': { maxWidth: '100%' },
-    '& pre': { overflowX: 'auto', background: tokens.colorNeutralBackground2, padding: '8px', borderRadius: '6px' },
+    lineHeight: 1.8,
+    fontSize: '15px',
+    '& img': { maxWidth: '100%', borderRadius: '8px' },
+    '& pre': { overflowX: 'auto', background: tokens.colorNeutralBackground2, padding: '12px', borderRadius: '8px' },
     '& code': { fontFamily: 'Consolas, Monaco, monospace' },
   },
   itemBlock: {
-    padding: '12px 16px',
-    borderRadius: '8px',
+    padding: '16px 20px',
+    borderRadius: '12px',
     border: `1px solid ${tokens.colorNeutralStroke2}`,
     backgroundColor: tokens.colorNeutralBackground1,
     display: 'flex',
     flexDirection: 'column',
-    gap: '8px',
+    gap: '12px',
   },
   itemHeader: {
     display: 'flex',
     alignItems: 'center',
     gap: '8px',
-    fontSize: '14px',
+    fontSize: '15px',
     fontWeight: 600,
   },
-  itemDesc: { fontSize: '12px', color: tokens.colorNeutralForeground2 },
+  itemDesc: { fontSize: '13px', color: tokens.colorNeutralForeground2, lineHeight: 1.6 },
   magnetContent: {
     display: 'flex',
     gap: '8px',
     alignItems: 'center',
-    padding: '6px 8px',
-    borderRadius: '6px',
+    padding: '10px 12px',
+    borderRadius: '8px',
     backgroundColor: tokens.colorNeutralBackground2,
     fontFamily: 'Consolas, Monaco, monospace',
-    fontSize: '12px',
+    fontSize: '13px',
     wordBreak: 'break-all',
     cursor: 'pointer',
   },
   gallery: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))',
-    gap: '8px',
+    gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))',
+    gap: '12px',
   },
   galleryImg: {
     width: '100%',
-    aspectRatio: '1 / 1',
+    aspectRatio: '4 / 3',
     objectFit: 'cover',
-    borderRadius: '6px',
+    borderRadius: '10px',
     cursor: 'pointer',
+    transition: 'transform 0.15s',
+    '&:hover': { transform: 'scale(1.02)' },
   },
   overlay: {
     position: 'fixed',
     inset: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    backgroundColor: 'rgba(0, 0, 0, 0.88)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
@@ -120,6 +171,7 @@ const useStyles = makeStyles({
     maxHeight: '85vh',
     objectFit: 'contain',
     userSelect: 'none',
+    borderRadius: '8px',
   },
   closeBtn: { position: 'absolute', top: '24px', right: '24px', zIndex: 1001 },
   counter: {
@@ -130,18 +182,21 @@ const useStyles = makeStyles({
     color: '#fff',
     fontSize: '14px',
     zIndex: 1001,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    padding: '4px 12px',
+    borderRadius: '12px',
   },
   filesBox: {
-    marginTop: '8px',
+    marginTop: '4px',
     border: `1px solid ${tokens.colorNeutralStroke2}`,
-    borderRadius: '6px',
+    borderRadius: '8px',
     overflow: 'hidden',
   },
   filesHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '6px 12px',
+    padding: '8px 14px',
     backgroundColor: tokens.colorNeutralBackground2,
     fontSize: '12px',
     color: tokens.colorNeutralForeground2,
@@ -158,12 +213,12 @@ const useStyles = makeStyles({
     },
   },
   filesName: {
-    padding: '6px 12px',
+    padding: '8px 14px',
     textAlign: 'left',
     wordBreak: 'break-all',
   },
   filesSize: {
-    padding: '6px 12px',
+    padding: '8px 14px',
     textAlign: 'right',
     whiteSpace: 'nowrap',
     color: tokens.colorNeutralForeground3,
@@ -442,43 +497,100 @@ export function DetailPage() {
         )}
       </div>
 
-      {/* 标题与元信息 */}
-      <div>
-        <h1 className={styles.title}>{resource.title}</h1>
-        <div className={styles.meta}>
-          <span>创建于 {formatTime(resource.created_at)}</span>
-          <span>更新于 {formatTime(resource.updated_at)}</span>
-          {resource.read_level === 0 ? (
-            <Badge color="success" appearance="outline">公开</Badge>
-          ) : (
-            <Badge color="warning" appearance="outline">需权限 {resource.read_level}</Badge>
+      {/* 标题 + 缩略图（左右布局） */}
+      <div className={styles.header}>
+        {resource.thumbnail_path && (
+          <img
+            className={styles.thumb}
+            src={assetUrl(resource.thumbnail_path)}
+            alt={resource.title}
+            loading="lazy"
+          />
+        )}
+        <div className={styles.headerMain}>
+          <h1 className={styles.title}>{resource.title}</h1>
+          <div className={styles.meta}>
+            {resource.author && (
+              <button
+                type="button"
+                onClick={() => navigate(`/?author=${resource.author!.id}`)}
+                title={`查看 ${resource.author.nickname || resource.author.username} 的全部文章`}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  padding: '3px 10px 3px 3px',
+                  border: 'none',
+                  borderRadius: '16px',
+                  backgroundColor: tokens.colorNeutralBackground2,
+                  color: tokens.colorNeutralForeground1,
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                }}
+              >
+                <Avatar
+                  size={24}
+                  name={resource.author.nickname || resource.author.username}
+                  image={resource.author.avatar_path ? { src: assetUrl(resource.author.avatar_path) } : undefined}
+                />
+                {resource.author.nickname || resource.author.username}
+              </button>
+            )}
+            <span title={formatTime(resource.created_at)}>创建于 {relativeTime(resource.created_at)}</span>
+            <span title={formatTime(resource.updated_at)}>更新于 {relativeTime(resource.updated_at)}</span>
+            {resource.read_level === 0 ? (
+              <Badge color="success" appearance="outline">公开</Badge>
+            ) : (
+              <Badge color="warning" appearance="outline">需权限 {resource.read_level}</Badge>
+            )}
+          </div>
+          {resource.tags && resource.tags.length > 0 && (
+            <div className={styles.tags} style={{ marginTop: '10px' }}>
+              {resource.tags.map((t) => (
+                <Badge
+                  key={t.id}
+                  appearance="filled"
+                  color="informative"
+                  style={{ cursor: 'pointer' }}
+                  onClick={() => navigate(`/?tag=${t.id}`)}
+                >
+                  {t.name}
+                </Badge>
+              ))}
+            </div>
+          )}
+          {resource.description && (
+            <p className={styles.descBlock} style={{ marginTop: '12px' }}>
+              {resource.description.replace(/\s*\n+\s*/g, ' ').trim()}
+            </p>
           )}
         </div>
-        {resource.tags && resource.tags.length > 0 && (
-          <div className={styles.tags} style={{ marginTop: '8px' }}>
-            {resource.tags.map((t) => (
-              <Badge
-                key={t.id}
-                appearance="filled"
-                color="informative"
-                style={{ cursor: 'pointer' }}
-                onClick={() => navigate(`/?tag=${t.id}`)}
-              >
-                {t.name}
-              </Badge>
-            ))}
-          </div>
-        )}
       </div>
-
-      {/* 描述 */}
-      {resource.description && (
-        <p className={styles.desc}>{resource.description}</p>
-      )}
 
       {/* 正文 */}
       {resource.content && (
         <MarkdownView content={resource.content} className={styles.content} />
+      )}
+
+      {/* 图集（紧跟正文之后） */}
+      {galleryImages.length > 0 && (
+        <div className={styles.itemBlock}>
+          <div className={styles.itemHeader}>
+            <DocumentRegular /> 图集 ({galleryImages.length})
+          </div>
+          <div className={styles.gallery}>
+            {galleryImages.map((img, idx) => (
+              <img
+                key={img.id}
+                className={styles.galleryImg}
+                src={assetUrl(img.file_path)}
+                alt={`图 ${idx + 1}`}
+                loading="lazy"
+                onClick={() => setPreviewIndex(idx)}
+              />
+            ))}
+          </div>
+        </div>
       )}
 
       {/* 磁力种子分组 */}
@@ -689,27 +801,6 @@ export function DetailPage() {
           )}
         </div>
       ))}
-
-      {/* 图集 */}
-      {galleryImages.length > 0 && (
-        <div className={styles.itemBlock}>
-          <div className={styles.itemHeader}>
-            <DocumentRegular /> 图集 ({galleryImages.length})
-          </div>
-          <div className={styles.gallery}>
-            {galleryImages.map((img, idx) => (
-              <img
-                key={img.id}
-                className={styles.galleryImg}
-                src={assetUrl(img.file_path)}
-                alt={`图 ${idx + 1}`}
-                loading="lazy"
-                onClick={() => setPreviewIndex(idx)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
 
       {/* 图集预览遮罩 */}
       {previewIndex >= 0 && galleryImages[previewIndex] && (

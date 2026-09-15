@@ -119,6 +119,15 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     .await?;
     exec_script(pool, include_str!("migrations/0004_users_system.sql"), false).await?;
 
+    // 0006：资源作者列（旧库补列，新库 ALTER 幂等容错）
+    exec_script(pool, include_str!("migrations/0006_resource_author.sql"), false).await?;
+
+    // 0007：合集作者列（区分"编辑自己的合集"与"管理他人合集"）
+    exec_script(pool, include_str!("migrations/0007_collection_author.sql"), false).await?;
+
+    // 0008：合集正文内容（Markdown）
+    exec_script(pool, include_str!("migrations/0008_collection_content.sql"), false).await?;
+
     // 0005：权限系统。ALTER 逐条容错；visibility -> read_level 的回填只在新列刚添加时执行一次，
     // 避免以后每次启动都用旧 visibility 覆盖管理员设置过的 read_level
     let read_level_already = column_exists(pool, "resources", "read_level").await?;
@@ -144,5 +153,12 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), sqlx::Error> {
     let _ = sqlx::query("UPDATE users SET permission_level = 5 WHERE is_admin = 1")
         .execute(pool)
         .await;
+    // 0006 回填：迁移前的历史资源归给最早的用户；之后新建资源必带 user_id，此语句不再生效
+    let _ = sqlx::query(
+        "UPDATE resources SET user_id = (SELECT MIN(id) FROM users) \
+         WHERE user_id IS NULL AND (SELECT COUNT(*) FROM users) > 0",
+    )
+    .execute(pool)
+    .await;
     Ok(())
 }

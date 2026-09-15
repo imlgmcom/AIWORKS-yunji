@@ -18,6 +18,9 @@ pub struct Resource {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    /// 作者用户 ID（历史数据回填为最早用户；用户被删除后仍保留）
+    #[serde(default)]
+    pub user_id: Option<i64>,
     // 附加关系（列表/详情时附加）
     #[serde(default)]
     pub tags: Vec<TagRef>,
@@ -29,9 +32,20 @@ pub struct Resource {
     pub items: Vec<ResourceItem>,
     #[serde(default)]
     pub images: Vec<ImageRef>,
+    /// 作者信息（用户已删除时为 None）
+    #[serde(default)]
+    pub author: Option<AuthorRef>,
     /// 资源包含的附件类型聚合（列表页用于显示类型徽章）
     #[serde(default)]
     pub item_types: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthorRef {
+    pub id: i64,
+    pub username: String,
+    pub nickname: String,
+    pub avatar_path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -96,6 +110,8 @@ pub struct ListParams {
     #[serde(default)]
     pub category_id: Option<i64>,
     #[serde(default)]
+    pub user_id: Option<i64>,
+    #[serde(default)]
     pub sort: Option<String>,
     #[serde(default)]
     pub direction: Option<String>,
@@ -154,6 +170,9 @@ pub async fn list(pool: &SqlitePool, params: &ListParams, viewer_level: i64) -> 
             "id IN (SELECT resource_id FROM resource_categories WHERE category_id = {})", cat_id
         ));
     }
+    if let Some(uid) = params.user_id {
+        conditions.push(format!("user_id = {}", uid));
+    }
 
     let where_clause = if conditions.is_empty() {
         String::new()
@@ -171,12 +190,12 @@ pub async fn list(pool: &SqlitePool, params: &ListParams, viewer_level: i64) -> 
     // 查询列表
     let sql = format!(
         "SELECT id, title, description, content, status, read_level, access_password, \
-         thumbnail_path, created_at, updated_at, deleted_at \
+         thumbnail_path, created_at, updated_at, deleted_at, user_id \
          FROM resources {} ORDER BY {} {} LIMIT ? OFFSET ?",
         where_clause, sort_col, direction
     );
 
-    let rows = sqlx::query_as::<_, (i64, String, String, String, String, i64, String, String, String, String, Option<String>)>(&sql)
+    let rows = sqlx::query_as::<_, (i64, String, String, String, String, i64, String, String, String, String, Option<String>, Option<i64>)>(&sql)
         .bind(params.page_size)
         .bind(offset)
         .fetch_all(pool)
@@ -184,17 +203,18 @@ pub async fn list(pool: &SqlitePool, params: &ListParams, viewer_level: i64) -> 
 
     let mut items = Vec::new();
     for row in rows {
-        let (id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at) = row;
+        let (id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at, user_id) = row;
         // 附加 tags
         let tags = get_tags_for_resource(pool, id).await?;
         let collections = get_collections_for_resource(pool, id).await?;
         let category = get_category_for_resource(pool, id).await?;
         let images = get_images_for_resource(pool, id).await?;
+        let author = get_author_for_resource(pool, user_id).await?;
         // 聚合附件类型（magnet/torrent → magnet_torrent，去重）
         let item_types = get_item_types_for_resource(pool, id).await?;
         items.push(Resource {
-            id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at,
-            tags, collections, category, items: vec![], images, item_types,
+            id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at, user_id,
+            tags, collections, category, items: vec![], images, author, item_types,
         });
     }
 
@@ -204,10 +224,10 @@ pub async fn list(pool: &SqlitePool, params: &ListParams, viewer_level: i64) -> 
 pub async fn get(pool: &SqlitePool, rid: i64) -> Result<Resource, AppError> {
     let row = sqlx::query_as::<
         _,
-        (i64, String, String, String, String, i64, String, String, String, String, Option<String>),
+        (i64, String, String, String, String, i64, String, String, String, String, Option<String>, Option<i64>),
     >(
         "SELECT id, title, description, content, status, read_level, access_password, \
-         thumbnail_path, created_at, updated_at, deleted_at \
+         thumbnail_path, created_at, updated_at, deleted_at, user_id \
          FROM resources WHERE id = ? AND deleted_at IS NULL",
     )
     .bind(rid)
@@ -215,26 +235,27 @@ pub async fn get(pool: &SqlitePool, rid: i64) -> Result<Resource, AppError> {
     .await?;
 
     let row = row.ok_or(AppError::NotFound)?;
-    let (id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at) = row;
+    let (id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at, user_id) = row;
 
     let tags = get_tags_for_resource(pool, id).await?;
     let collections = get_collections_for_resource(pool, id).await?;
     let category = get_category_for_resource(pool, id).await?;
     let items = get_items_for_resource(pool, id).await?;
     let images = get_images_for_resource(pool, id).await?;
+    let author = get_author_for_resource(pool, user_id).await?;
     let item_types = get_item_types_for_resource(pool, id).await?;
 
     Ok(Resource {
-        id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at,
-        tags, collections, category, items, images, item_types,
+        id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at, user_id,
+        tags, collections, category, items, images, author, item_types,
     })
 }
 
-pub async fn create(pool: &SqlitePool, payload: &CreateResource) -> Result<i64, AppError> {
+pub async fn create(pool: &SqlitePool, payload: &CreateResource, user_id: i64) -> Result<i64, AppError> {
     let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let result = sqlx::query(
-        "INSERT INTO resources (title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO resources (title, description, content, status, read_level, access_password, thumbnail_path, user_id, created_at, updated_at) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&payload.title)
     .bind(&payload.description)
@@ -243,6 +264,7 @@ pub async fn create(pool: &SqlitePool, payload: &CreateResource) -> Result<i64, 
     .bind(payload.read_level)
     .bind(&payload.access_password)
     .bind(&payload.thumbnail_path)
+    .bind(user_id)
     .bind(&now)
     .bind(&now)
     .execute(pool)
@@ -299,10 +321,10 @@ pub async fn permanent_delete(pool: &SqlitePool, rid: i64) -> Result<(), AppErro
 pub async fn list_deleted(pool: &SqlitePool) -> Result<Vec<Resource>, AppError> {
     let rows = sqlx::query_as::<
         _,
-        (i64, String, String, String, String, i64, String, String, String, String, Option<String>),
+        (i64, String, String, String, String, i64, String, String, String, String, Option<String>, Option<i64>),
     >(
         "SELECT id, title, description, content, status, read_level, access_password, \
-         thumbnail_path, created_at, updated_at, deleted_at \
+         thumbnail_path, created_at, updated_at, deleted_at, user_id \
          FROM resources WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC",
     )
     .fetch_all(pool)
@@ -310,13 +332,50 @@ pub async fn list_deleted(pool: &SqlitePool) -> Result<Vec<Resource>, AppError> 
 
     let mut items = Vec::new();
     for row in rows {
-        let (id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at) = row;
+        let (id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at, user_id) = row;
         items.push(Resource {
-            id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at,
-            tags: vec![], collections: vec![], category: None, items: vec![], images: vec![], item_types: vec![],
+            id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at, user_id,
+            tags: vec![], collections: vec![], category: None, items: vec![], images: vec![], author: None, item_types: vec![],
         });
     }
     Ok(items)
+}
+
+/// 分页查询回收站
+pub async fn list_deleted_paged(
+    pool: &SqlitePool,
+    limit: i64,
+    offset: i64,
+) -> Result<crate::db::repository::Paged<Resource>, AppError> {
+    let total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM resources WHERE deleted_at IS NOT NULL",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let rows = sqlx::query_as::<
+        _,
+        (i64, String, String, String, String, i64, String, String, String, String, Option<String>, Option<i64>),
+    >(
+        "SELECT id, title, description, content, status, read_level, access_password, \
+         thumbnail_path, created_at, updated_at, deleted_at, user_id \
+         FROM resources WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC \
+         LIMIT ?1 OFFSET ?2",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(pool)
+    .await?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        let (id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at, user_id) = row;
+        items.push(Resource {
+            id, title, description, content, status, read_level, access_password, thumbnail_path, created_at, updated_at, deleted_at, user_id,
+            tags: vec![], collections: vec![], category: None, items: vec![], images: vec![], author: None, item_types: vec![],
+        });
+    }
+    Ok(crate::db::repository::Paged { items, total })
 }
 
 // --- 附件项 ---
@@ -484,6 +543,20 @@ async fn get_category_for_resource(pool: &SqlitePool, rid: i64) -> Result<Option
     .fetch_optional(pool)
     .await?;
     Ok(row.map(|(id, name, parent_id)| CategoryRef { id, name, parent_id }))
+}
+
+/// 按 user_id 取作者摘要（用户已删除时返回 None）
+async fn get_author_for_resource(pool: &SqlitePool, user_id: Option<i64>) -> Result<Option<AuthorRef>, AppError> {
+    let Some(uid) = user_id else { return Ok(None); };
+    let row = sqlx::query_as::<_, (i64, String, String, String)>(
+        "SELECT id, username, nickname, avatar_path FROM users WHERE id = ?",
+    )
+    .bind(uid)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|(id, username, nickname, avatar_path)| AuthorRef {
+        id, username, nickname, avatar_path,
+    }))
 }
 
 async fn get_images_for_resource(pool: &SqlitePool, rid: i64) -> Result<Vec<ImageRef>, AppError> {
